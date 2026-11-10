@@ -7,7 +7,7 @@ import { Type } from "typebox";
 // @ts-ignore plain ESM helpers (see lib/)
 import { validate } from "../../lib/jsonschema.mjs";
 // @ts-ignore
-import { checkWrite, matchesAny, requiredOutputs, phaseRequires } from "../../lib/policy.mjs";
+import { checkWrite, matchesAny, requiredOutputs, phaseRequires, testGate } from "../../lib/policy.mjs";
 // @ts-ignore
 import * as S_ from "../../lib/state.mjs";
 // @ts-ignore
@@ -302,7 +302,7 @@ export default function (pi: ExtensionAPI) {
         S.writeFileAtomic(path.join(cwd, logRel), log.slice(-20000));
         rows.push(`${ok ? "PASS" : "FAIL"} ${name} (${logRel})${ok ? "" : "\n" + log.slice(-1500)}`);
       }
-      return text(`${allOk && rows.length ? "ALL GREEN" : rows.length ? "RED" : "NO CHECKS CONFIGURED: not green. Set them with harness_state action=checks (commands: {build,typecheck,lint,test})"}\n${rows.join("\n")}`);
+      return text(`${allOk && rows.length && checks.test ? "ALL GREEN" : rows.length && !allOk ? "RED" : "NOT GREEN: no test check configured (or none ran). Set with harness_state action=checks (commands: {build,typecheck,lint,test})"}\n${rows.join("\n")}`);
     },
   });
 
@@ -393,7 +393,7 @@ export default function (pi: ExtensionAPI) {
         if (t.agent === "relay-implementor") {
           const sl = plan.slices.find((s: any) => s.id === t.slice);
           if (!sl) return `error: unknown slice ${t.slice}. Set task.slice to one of: ${plan.slices.map((s: any) => s.id).join(", ")}`;
-          ownedGlobs = sl.files.own;
+          ownedGlobs = [...sl.files.own, ...(sl.tests || [])];
         }
         const lf = path.join(cwd, ".ai", "lessons.md");
         const lessons = fs.existsSync(lf) ? lessonsFor(fs.readFileSync(lf, "utf8"), t.agent) : [];
@@ -408,7 +408,7 @@ export default function (pi: ExtensionAPI) {
           `## Inputs (read in full)\n${b.inputs.map((f: string) => `- ${f}`).join("\n")}`,
           `## Lessons for your role\n${lessons.map((l: any) => `- ${l.symptom} => ${l.rule}`).join("\n") || "(none)"}`,
           required.length ? `## Required output files (authoritative; override any other file names above)\nWrite exactly these files with the write tool, relative to the working directory:\n${required.map((f) => `- ${f}`).join("\n")}\nThe task is not done until each exists on disk.` : "",
-          t.agent === "relay-architect" ? `## plan.json must validate against this JSON Schema exactly (no extra properties; slice ids kebab-case; contracts are objects {name,pinned,location}; slice.contracts are strings; slices need dependsOn; top-level needs contracts, slices, order (array of arrays of slice ids), independence)\n\`\`\`json\n${JSON.stringify(schema("plan"))}\n\`\`\`` : "",
+          t.agent === "relay-architect" ? `## plan.json must validate against this JSON Schema exactly (no extra properties; slice ids kebab-case; contracts are objects {name,pinned,location}; slice.contracts are strings; slices need dependsOn; every slice that changes code lists its test file(s) in slice.tests; slices in the SAME wave of order must have completely disjoint files.own (if two slices touch the same file, put them in separate waves, one slice per wave, in dependency order) and a wave with 2+ slices requires independence.parallelizable=true, otherwise use one slice per wave; top-level needs contracts, slices, order (array of arrays of slice ids), independence)\n\`\`\`json\n${JSON.stringify(schema("plan"))}\n\`\`\`` : "",
           `Feature dir: ${featureDir()}${t.slice ? `\nSlice: ${t.slice}` : ""}`,
         ].filter(Boolean).join("\n\n");
         if (t.step) withState(cwd, (st: any) => S.beginStep(st, t.step, { agent: t.agent, inputs: b.inputs }));
@@ -418,10 +418,24 @@ export default function (pi: ExtensionAPI) {
           try {
             const pl = JSON.parse(fs.readFileSync(path.join(cwd, featureDir(), "plan.json"), "utf8"));
             const e = validate(schema("plan"), pl);
-            return e.length ? e : checkPlan(pl);
+            if (e.length) return e;
+            const cp = checkPlan(pl);
+            if (cp.length) return cp;
+            return pl.slices.flatMap((s: any) => testGate([...s.files.own, ...(s.tests || [])]).map(() => `slice ${s.id}: owns code but lists no test file; add its test file(s) (e.g. test/<name>.test.js) to slice.tests`));
           } catch (e: any) { return [`plan.json unreadable: ${e.message}`]; }
         };
+        const taskHead = safe(() => git(cwd, "rev-parse", "HEAD"));
+        const testProblems = () => {
+          if (t.agent !== "relay-implementor") return [] as string[];
+          const ch = new Set<string>();
+          try {
+            if (taskHead) git(cwd, "diff", "--name-only", `${taskHead}..HEAD`).split("\n").forEach((f) => f && ch.add(f));
+            git(cwd, "status", "--porcelain").split("\n").forEach((l) => l && ch.add(l.slice(3).trim()));
+          } catch { /* ignore */ }
+          return testGate([...ch].filter((f) => matchesAny(ownedGlobs, f)));
+        };
         const problems = () => [
+          ...testProblems(),
           ...required.filter((f) => !fs.existsSync(path.join(cwd, f))).map((f) => `missing output ${f}`),
           ...(required.every((f) => fs.existsSync(path.join(cwd, f))) ? planProblems() : []),
         ];
@@ -430,8 +444,8 @@ export default function (pi: ExtensionAPI) {
           env: { RELAY_ROLE: agent.name, RELAY_FEATURE: slug!, RELAY_OWNED: JSON.stringify(ownedGlobs) },
         });
         let probs = problems();
-        if (r.exitCode === 0 && probs.length) {
-          // one automatic retry with concrete feedback
+        for (let attempt = 0; attempt < 2 && r.exitCode === 0 && probs.length; attempt++) {
+          // automatic retries with concrete feedback
           r = await runAgent({
             cwd, agent, signal,
             task: `${task}\n\n## Previous attempt failed validation. Fix exactly this and write the files to disk:\n${probs.map((x) => `- ${x}`).join("\n")}`,
@@ -459,7 +473,7 @@ export default function (pi: ExtensionAPI) {
 
       let violations = "";
       if (needPlan) {
-        const all = p.tasks.filter((t: any) => t.agent === "relay-implementor").flatMap((t: any) => plan.slices.find((s: any) => s.id === t.slice)?.files.own ?? []);
+        const all = p.tasks.filter((t: any) => t.agent === "relay-implementor").flatMap((t: any) => plan.slices.find((s: any) => s.id === t.slice)?.files.own ?? []).concat(p.tasks.filter((t: any) => t.agent === "relay-implementor").flatMap((t: any) => plan.slices.find((s: any) => s.id === t.slice)?.tests ?? []));
         const changed = new Set<string>();
         try {
           if (headBefore) git(cwd, "diff", "--name-only", `${headBefore}..HEAD`).split("\n").forEach((f) => f && changed.add(f));
