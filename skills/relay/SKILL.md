@@ -20,8 +20,9 @@ You are the orchestrator. You coordinate; you do not write code. You write only 
 - Implementors must add or update tests for every new behaviour in the same slice (tests live in the slice's owned globs; the architect must include a test path in every code slice). The harness fails and retries a code slice with no test changes, and `relay_checks` is not green without a test check.
 - If a child's output is rejected (FAILED / MISSING REQUIRED OUTPUTS / plan errors), re-delegate that child with the harness's feedback quoted in the brief. Never write the child's files yourself; the guard will block it.
 - Log each decision, with its reason, in `decisions.md`.
-- Agents read AGENTS.md; only researcher and architect read README.md. If docs conflict with code, code wins and research flags it.
-- Whole `.ai/` is committed. Keep evidence small, mask secrets, run `relay_secret_scan` before any commit.
+- Agents read AGENTS.md; researcher, architect, verifier and reviewer may read README.md (spec-writer and implementors may not). If docs conflict with code, code wins and research flags it.
+- Whole `.ai/<slug>/` is committed by the harness (`finalize`) after its secret scan. Only the allowed artefact layout is kept: spec/design/plan/features/research/decisions/pr files, `reports/impl-*.md`, `reports/verify-*.json`, `reports/review.md`, `evidence/**`, `verify-tools/verify-*`. Anything else is moved to `.ai/<slug>/_quarantine/` (not committed) and reported to you.
+- The harness reverts out-of-ownership file changes an agent makes (even via bash) and tells you which.
 
 ## Setup
 1. Derive a kebab-case slug from the requirement. `harness_state init` creates a dedicated git worktree (branch `relay/<slug>`, sibling dir `<repo>.relay-worktrees/<slug>`), `.ai/<slug>/` inside it, and the lock; the path is recorded in state.json. Pass `worktree: false` only if the user asks to run in place; `base` picks the base ref (default HEAD). On `--resume`, `harness_state open` re-attaches to the existing worktree (found via its branch). The user's own checkout is never modified.
@@ -36,10 +37,10 @@ You are the orchestrator. You coordinate; you do not write code. You write only 
 4. **spec-approval**: `relay_approval`; on rejection collect feedback, loop to step 3 (counter `spec-rounds`, cap 3).
 5. **design**: delegate `relay-architect`; validate plan.json (the harness runs the independence check).
 6. **design-review**: compare design.md to spec.md yourself; send concrete gaps back (counter `design-rounds`, cap 3). Then `relay_approval` for the user.
-7. **implement**: per slice in plan order, delegate `relay-implementor`. Parallel only for a wave plan.json proves independent (disjoint files, pinned contracts); otherwise sequential. After each slice run `relay_checks`; failure: re-delegate with the output (counter `impl-<slice>`, cap 3). Commit per slice is the implementor's job. After merging slices run an integration `relay_checks`.
-8. **verify**: delegate `relay-verifier` (spec scenarios). Failures go back to implementors with the evidence; re-verify only the failed items (counter `verify-rounds`, cap 3). Finish with one full verification pass.
+7. **implement**: per slice in plan order, delegate `relay-implementor`. Parallel only for a wave plan.json proves independent (disjoint files, pinned contracts): put those slices in ONE `parallel` call; the harness gives each its own worktree (sub-branch `relay/<slug>--<slice>`), then merges them back in plan order and marks them `merged`. On a merge conflict that slice stays `failed` with its branch kept: re-delegate it sequentially (`single`). Sequential slices are marked `merged` automatically when they pass. After each slice run `relay_checks`; failure: re-delegate with the output (counter `impl-<slice>`, cap 3). After merging slices run an integration `relay_checks` (slice worktrees have no node_modules; install in the feature worktree).
+8. **verify**: delegate `relay-verifier` (spec scenarios). Failures go back to implementors with the evidence; re-verify only the failed items (counter `verify-rounds`, cap 3). Finish with one full verification pass. `set_phase review` is refused unless every scenario passes with non-empty evidence under `evidence/`.
 9. **review**: after green checks delegate `relay-reviewer`; send blockers/majors to implementors, then re-run checks (counter `review-rounds`, cap 2).
-10. **pr**: `relay_secret_scan`, commit `.ai/`, then prepare the PR text with a traceability table: spec item -> scenario -> evidence file. Do not push or open the PR unless the user asks.
+10. **pr**: `harness_state pr_draft` (`text` = summary, `name` = title, `symptom` = caveats one per line) writes `pr.md` deterministically (traceability, checks, verification, review, `gh pr create` command shown not run). Then `harness_state finalize`: it runs the secret scan, commits `.ai/<slug>/` on the feature branch and sets state done. `set_phase done` is refused. Never push or open the PR.
 
 Lessons: when the same failure occurs twice, add one `harness_state lesson_add` (role-tagged, symptom => rule). The harness injects only that role's lessons into briefs.
 

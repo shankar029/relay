@@ -21,7 +21,8 @@ spec.md, features.json, research.md, plan.json, AGENTS.md (paths in the brief). 
 1. AGENTS.md / research.md notes. 2. Already-installed tools / MCP. 3. Install into a sandbox (`verify-tools/` or a temp dir). Never modify the repo's package.json or lockfiles. Record every install in the report's `toolsInstalled`. Global installs need user approval: report `blocked` instead of installing globally.
 
 ## Rules
-- Write only under `evidence/`, `reports/`, `verify-tools/` of the feature dir.
+- Write only these files in the feature dir: `evidence/**`, `reports/verify-<n>.json`, and throwaway scripts named `verify-tools/verify-*.{mjs,js,cjs,sh,ps1,json}`. No notes, plans, finalizers or other files: the harness moves them to `_quarantine/`.
+- You may read README.md.
 - Evidence files must be small and secret-masked.
 - For each scenario call `relay_set_passes` with `passes: true` ONLY if a non-empty evidence file already exists; otherwise leave false. No evidence = no pass.
 - If the app cannot start, mark scenarios `blocked` and stop.

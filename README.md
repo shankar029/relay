@@ -36,5 +36,7 @@ Every feature runs in its own git worktree by default (branch `relay/<slug>`, di
 
 ## Known limitations
 - Verified: schemas, lib logic, frontmatter lint, extension typechecks against pi 1.5.0 types. Not verified: a live end-to-end pi run (extension loading, real child agents).
-- The `bash` tool can bypass write guards; mitigated by a post-run git ownership check on implementors, which reports violations.
-- Parallel implementors share one working tree (disjoint owned files, each commits only its own).
+- The `bash` tool can still write anywhere while an agent runs; after every agent run the harness diffs against the pre-run HEAD and reverts (and reports) out-of-ownership changes, including committed ones. Reads of ignored/untracked paths are not policed.
+- Parallel implementors each get their own worktree (`<slug>--<slice>`, branch `relay/<slug>--<slice>`), merged back `--no-ff` in plan order after the batch; conflicts abort that merge, mark the slice `failed` and keep its branch/worktree for sequential re-delegation. Slice worktrees have no `node_modules`.
+- Files in `.ai/<slug>/` outside the allowed layout (see `lib/policy.mjs` `isLayoutFile`) are moved to `.ai/<slug>/_quarantine/` after each delegation. The PR phase is `pr_draft` (writes `pr.md`) then `finalize` (secret scan, commit `.ai/<slug>/`, state done); no push, no PR.
+- `set_phase` also validates content (schemas, approvals recorded, slices merged, verifier evidence for every passing scenario, review report) via `lib/gates.mjs`.

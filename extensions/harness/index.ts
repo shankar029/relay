@@ -7,7 +7,7 @@ import { Type } from "typebox";
 // @ts-ignore plain ESM helpers (see lib/)
 import { validate } from "../../lib/jsonschema.mjs";
 // @ts-ignore
-import { checkWrite, matchesAny, requiredOutputs, phaseRequires, testGate } from "../../lib/policy.mjs";
+import { checkWrite, checkRead, matchesAny, requiredOutputs, phaseRequires, testGate } from "../../lib/policy.mjs";
 // @ts-ignore
 import * as S_ from "../../lib/state.mjs";
 // @ts-ignore
@@ -18,8 +18,21 @@ import { lessonsFor, addLesson } from "../../lib/lessons.mjs";
 import { scanText, maskText } from "../../lib/secrets.mjs";
 // @ts-ignore
 import { ensureWorktree, findWorktree, excludeHarnessFiles, branchFor, repoTop } from "../../lib/worktree.mjs";
+// @ts-ignore
+import { phaseProblems, renderPr } from "../../lib/gates.mjs";
+// @ts-ignore
+import { enforceOwnership, quarantineStrays, commitArtefacts, addSliceWorktree, commitSliceLeftovers, mergeSlices, removeSliceWorktree, changedSince } from "../../lib/gitflow.mjs";
 const S: any = S_;
 import { RELAY_HOME, loadAgents, runAgent, mapLimit } from "./run.ts";
+
+function defaultBranch(cwd: string): string {
+  try { return git(cwd, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); } catch { /* no remote */ }
+  try {
+    const top = git(cwd, "worktree", "list", "--porcelain").split("\n").find((l) => l.startsWith("branch "));
+    if (top) return top.replace("branch refs/heads/", "").trim();
+  } catch { /* none */ }
+  return "main";
+}
 
 const readJson = (f: string) => JSON.parse(fs.readFileSync(f, "utf8"));
 const schema = (n: string) => readJson(path.join(RELAY_HOME, "schemas", `${n}.schema.json`));
@@ -57,10 +70,9 @@ export default function (pi: ExtensionAPI) {
       const why = (checkWrite as any)({ role, rel, featureDir: featureDir(), owned });
       if (why) return { block: true, reason: `relay guard (${role}): cannot write ${rel}: ${why}` };
     }
-    if (event.toolName === "read" && /(^|[\\/])README\.md$/i.test(String(input.path || ""))) {
-      if (!["relay-researcher", "relay-architect"].includes(role)) {
-        return { block: true, reason: "relay guard: only researcher and architect may read README.md" };
-      }
+    if (event.toolName === "read") {
+      const why = (checkRead as any)({ role, rel: posix(String(input.path || "")) });
+      if (why) return { block: true, reason: `relay guard: ${why}` };
     }
     if (event.toolName === "bash") {
       const cmd = String(input.command || "");
@@ -124,10 +136,10 @@ export default function (pi: ExtensionAPI) {
     name: "harness_state",
     label: "Harness state",
     description:
-      "Read/modify .ai/<slug>/state.json safely (atomic, schema-validated). Actions: init, open, get, set_phase, step, counter, approval (only 'pending'), slice, checks, question, answer, artifact, lesson_add, lessons_for, unlock.",
+      "Read/modify .ai/<slug>/state.json safely (atomic, schema-validated). Actions: init, open, get, set_phase (content-gated; 'done' is refused), pr_draft (text=summary, name=title, symptom=caveats one per line; writes pr.md), finalize (phase pr -> secret scan, commit .ai/<slug>, done; never pushes), step, counter, approval (only 'pending'), slice, checks, question, answer, artifact, lesson_add, lessons_for, unlock.",
     promptSnippet: "Change Relay run state (never edit state.json by hand)",
     parameters: Type.Object({
-      action: StringEnum(["init", "open", "get", "set_phase", "step", "counter", "approval", "slice", "checks", "question", "answer", "artifact", "lesson_add", "lessons_for", "unlock"] as const),
+      action: StringEnum(["init", "open", "get", "set_phase", "pr_draft", "finalize", "step", "counter", "approval", "slice", "checks", "question", "answer", "artifact", "lesson_add", "lessons_for", "unlock"] as const),
       slug: Type.Optional(Type.String()),
       requirement: Type.Optional(Type.String()),
       phase: Type.Optional(Type.String()),
@@ -220,11 +232,42 @@ export default function (pi: ExtensionAPI) {
           switch (p.action) {
             case "set_phase":
               if (!S.PHASES.includes(p.phase)) throw new Error(`unknown phase ${p.phase}`);
+              if (p.phase === "done") throw new Error("use harness_state action=finalize (after pr_draft) to finish the run");
               {
                 const miss = phaseRequires(p.phase, featureDir()).filter((f: string) => !fs.existsSync(path.join(cwd, f)));
                 if (miss.length) throw new Error(`cannot enter ${p.phase}: missing ${miss.join(", ")}. Re-run the producing worker.`);
+                const probs = (phaseProblems as any)({ phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: { features: schema("features"), plan: schema("plan") } });
+                if (probs.length) throw new Error(`cannot enter ${p.phase}:\n- ${probs.join("\n- ")}`);
               }
               st.phase = p.phase; return `phase=${p.phase}`;
+            case "pr_draft": {
+              if (!p.text) throw new Error("text (PR summary) required; caveats go in 'caveats'");
+              const fe = readJson(path.join(cwd, featureDir(), "features.json"));
+              const probs = (phaseProblems as any)({ phase: "pr", cwd, featureDir: featureDir(), state: st, schemas: { features: schema("features"), plan: schema("plan") } });
+              if (probs.length) throw new Error(`cannot draft PR:\n- ${probs.join("\n- ")}`);
+              const ev = path.join(cwd, featureDir(), "evidence");
+              const checkLogs = fs.existsSync(ev) ? fs.readdirSync(ev).filter((n) => /^checks-.*\.log$/.test(n)).sort() : [];
+              const checks = checkLogs.map((n) => {
+                const t = fs.readFileSync(path.join(ev, n), "utf8");
+                return `\`${featureDir()}/evidence/${n}\`: ${/^# RESULT: (PASS|FAIL)/m.exec(t)?.[1] ?? "?"}`;
+              });
+              const base = st.worktree?.base && st.worktree.base !== "HEAD" ? st.worktree.base : defaultBranch(cwd);
+              const branch = st.worktree?.branch || git(cwd, "rev-parse", "--abbrev-ref", "HEAD");
+              let commits: string[] = [], diffStat = "";
+              try { commits = git(cwd, "log", "--oneline", `${base}..HEAD`).split("\n").filter(Boolean); diffStat = git(cwd, "diff", "--stat", `${base}...HEAD`); } catch { /* base unknown */ }
+              const rv = fs.readFileSync(path.join(cwd, featureDir(), "reports", "review.md"), "utf8");
+              const reports = fs.readdirSync(path.join(cwd, featureDir(), "reports")).filter((n) => /^verify-.*\.json$/.test(n)).map((n) => `${featureDir()}/reports/${n}`);
+              const md = (renderPr as any)({ slug, title: p.name || slug, summary: p.text, caveats: p.symptom ? String(p.symptom).split("\n").filter(Boolean) : [], features: fe, featureDir: featureDir(), branch, base, checks, commits, diffStat, reviewExcerpt: rv.slice(0, 1500), verifyReports: reports });
+              S.writeFileAtomic(path.join(cwd, featureDir(), "pr.md"), md);
+              return `pr.md written (${md.length} chars). Next: harness_state action=finalize`;
+            }
+            case "finalize": {
+              if (st.phase !== "pr") throw new Error(`finalize requires phase=pr (now ${st.phase})`);
+              const probs = (phaseProblems as any)({ phase: "done", cwd, featureDir: featureDir(), state: st, schemas: { features: schema("features"), plan: schema("plan") } });
+              if (probs.length) throw new Error(`cannot finalize:\n- ${probs.join("\n- ")}`);
+              st.phase = "done";
+              return "__finalize__";
+            }
             case "step":
               if (p.status === "running") S.beginStep(st, p.name, { agent: p.agent });
               else S.finishStep(st, p.name, { status: p.status });
@@ -252,6 +295,15 @@ export default function (pi: ExtensionAPI) {
           }
           throw new Error(`unknown action ${p.action}`);
         });
+        if (out === "__finalize__") {
+          const c = (commitArtefacts as any)(cwd, featureDir(), `relay: ${slug} artefacts (spec, design, plan, evidence, pr.md)`);
+          if (!c.ok) {
+            withState(cwd, (st: any) => { st.phase = "pr"; });
+            return text(`finalize refused: ${c.error}`);
+          }
+          S.releaseLock(lock());
+          return text(`done. Artefacts committed (${String(c.commit).slice(0, 8)}) on branch ${readJson(stateFile(cwd)).worktree?.branch ?? "(in place)"}. Nothing pushed. PR text: ${featureDir()}/pr.md (contains the gh pr create command).`);
+        }
         return text(String(out));
       } catch (e: any) {
         return text(`error: ${e.message}`);
@@ -297,7 +349,7 @@ export default function (pi: ExtensionAPI) {
         const r = spawnSync(checks[name], { cwd, shell: true, encoding: "utf8", timeout: 10 * 60_000 });
         const ok = r.status === 0;
         allOk = allOk && ok;
-        const log = maskText(`$ ${checks[name]}\n${r.stdout}\n${r.stderr}`);
+        const log = maskText(`# RESULT: ${ok ? "PASS" : "FAIL"}\n$ ${checks[name]}\n${r.stdout}\n${r.stderr}`);
         const logRel = `${featureDir()}/evidence/checks-${name}-${Date.now()}.log`;
         S.writeFileAtomic(path.join(cwd, logRel), log.slice(-20000));
         rows.push(`${ok ? "PASS" : "FAIL"} ${name} (${logRel})${ok ? "" : "\n" + log.slice(-1500)}`);
@@ -375,7 +427,7 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
-      const headBefore = needPlan ? safe(() => git(cwd, "rev-parse", "HEAD")) : "";
+      const okSlices: Record<string, boolean> = {};
       const prev: string[] = [];
       const runTask = async (t: any, i: number) => {
         const agent = agents.find((a) => a.name === t.agent);
@@ -424,30 +476,32 @@ export default function (pi: ExtensionAPI) {
             return pl.slices.flatMap((s: any) => testGate([...s.files.own, ...(s.tests || [])]).map(() => `slice ${s.id}: owns code but lists no test file; add its test file(s) (e.g. test/<name>.test.js) to slice.tests`));
           } catch (e: any) { return [`plan.json unreadable: ${e.message}`]; }
         };
-        const taskHead = safe(() => git(cwd, "rev-parse", "HEAD"));
+        const wcwd: string = t.__wt || cwd;
+        const taskHead = safe(() => git(wcwd, "rev-parse", "HEAD"));
+        const reverted: string[] = [];
+        const allowedFile = (f: string) => f.startsWith(".ai/") || matchesAny(ownedGlobs, f);
         const testProblems = () => {
           if (t.agent !== "relay-implementor") return [] as string[];
-          const ch = new Set<string>();
-          try {
-            if (taskHead) git(cwd, "diff", "--name-only", `${taskHead}..HEAD`).split("\n").forEach((f) => f && ch.add(f));
-            git(cwd, "status", "--porcelain").split("\n").forEach((l) => l && ch.add(l.slice(3).trim()));
-          } catch { /* ignore */ }
-          return testGate([...ch].filter((f) => matchesAny(ownedGlobs, f)));
+          const ch = changedSince(wcwd, taskHead);
+          return testGate([...ch].filter((f: string) => matchesAny(ownedGlobs, f)));
         };
-        const problems = () => [
-          ...testProblems(),
-          ...required.filter((f) => !fs.existsSync(path.join(cwd, f))).map((f) => `missing output ${f}`),
-          ...(required.every((f) => fs.existsSync(path.join(cwd, f))) ? planProblems() : []),
-        ];
+        const problems = () => {
+          if (taskHead) reverted.push(...(enforceOwnership as any)(wcwd, taskHead, allowedFile).reverted);
+          return [
+            ...testProblems(),
+            ...required.filter((f) => !fs.existsSync(path.join(wcwd, f))).map((f) => `missing output ${f}`),
+            ...(required.every((f) => fs.existsSync(path.join(wcwd, f))) ? planProblems() : []),
+          ];
+        };
         let r = await runAgent({
-          cwd, agent, task, signal,
+          cwd: wcwd, agent, task, signal,
           env: { RELAY_ROLE: agent.name, RELAY_FEATURE: slug!, RELAY_OWNED: JSON.stringify(ownedGlobs) },
         });
         let probs = problems();
         for (let attempt = 0; attempt < 2 && r.exitCode === 0 && probs.length; attempt++) {
           // automatic retries with concrete feedback
           r = await runAgent({
-            cwd, agent, signal,
+            cwd: wcwd, agent, signal,
             task: `${task}\n\n## Previous attempt failed validation. Fix exactly this and write the files to disk:\n${probs.map((x) => `- ${x}`).join("\n")}`,
             env: { RELAY_ROLE: agent.name, RELAY_FEATURE: slug!, RELAY_OWNED: JSON.stringify(ownedGlobs) },
           });
@@ -456,33 +510,57 @@ export default function (pi: ExtensionAPI) {
         const ranOk = r.exitCode === 0 && r.stopReason !== "error";
         const absent = probs;
         const ok = ranOk && absent.length === 0;
+        if (t.agent === "relay-implementor") {
+          (commitSliceLeftovers as any)(wcwd, t.slice, featureDir());
+          okSlices[t.slice] = ok;
+          if (!t.__wt) withState(cwd, (st: any) => { st.slices[t.slice] = ok ? { status: "merged", commit: safe(() => git(cwd, "rev-parse", "HEAD")) } : { status: "failed" }; });
+        }
         if (t.step) {
           const outs = Array.from(new Set([...(t.outputs || []), ...required]));
-          const outputs = outs.filter((f: string) => fs.existsSync(path.join(cwd, f)))
-            .map((f: string) => ({ path: posix(f), sha256: S.sha256File(path.join(cwd, f)) }));
+          const outputs = outs.filter((f: string) => fs.existsSync(path.join(wcwd, f)))
+            .map((f: string) => ({ path: posix(f), sha256: S.sha256File(path.join(wcwd, f)) }));
           withState(cwd, (st: any) => S.finishStep(st, t.step, { status: ok ? "done" : "failed", outputs, error: ok ? undefined : (absent.length ? `missing outputs: ${absent.join(", ")}` : r.errorMessage || r.stderr.slice(-500)) }));
         }
         prev[i] = r.output;
         const missNote = absent.length ? `\nMISSING REQUIRED OUTPUTS: ${absent.join(", ")}. Re-run this worker; do not proceed.` : "";
-        return `### ${t.agent}${t.slice ? ` (${t.slice})` : ""} exit=${r.exitCode}${ok ? "" : " FAILED"}\n${r.output || r.stderr.slice(-800)}${missNote}`;
+        const revNote = reverted.length ? `\nHARNESS REVERTED out-of-ownership changes: ${[...new Set(reverted)].join(", ")}` : "";
+        return `### ${t.agent}${t.slice ? ` (${t.slice})` : ""} exit=${r.exitCode}${ok ? "" : " FAILED"}\n${r.output || r.stderr.slice(-800)}${missNote}${revNote}`;
       };
+
+      // Parallel implementors each get their own worktree (sub-branch of the feature branch).
+      const useSliceWt = p.mode === "parallel" && p.tasks.filter((t: any) => t.agent === "relay-implementor").length > 1;
+      let preface = "";
+      if (useSliceWt) {
+        const cp = (commitArtefacts as any)(cwd, featureDir(), `relay: checkpoint ${slug} artefacts before parallel slices`);
+        if (!cp.ok) return text(`error: cannot checkpoint artefacts for slice worktrees: ${cp.error}`);
+        for (const t of p.tasks) {
+          try { t.__wt = (addSliceWorktree as any)(cwd, slug, t.slice).path; }
+          catch (e: any) { return text(`error: cannot create worktree for slice ${t.slice}: ${e.message}`); }
+          withState(cwd, (st: any) => { st.slices[t.slice] = { status: "running", worktree: t.__wt }; });
+        }
+      }
 
       let results: string[];
       if (p.mode === "chain") { results = []; for (let i = 0; i < p.tasks.length; i++) results.push(await runTask(p.tasks[i], i)); }
       else results = await mapLimit<any, string>(p.tasks, 4, runTask);
 
-      let violations = "";
-      if (needPlan) {
-        const all = p.tasks.filter((t: any) => t.agent === "relay-implementor").flatMap((t: any) => plan.slices.find((s: any) => s.id === t.slice)?.files.own ?? []).concat(p.tasks.filter((t: any) => t.agent === "relay-implementor").flatMap((t: any) => plan.slices.find((s: any) => s.id === t.slice)?.tests ?? []));
-        const changed = new Set<string>();
-        try {
-          if (headBefore) git(cwd, "diff", "--name-only", `${headBefore}..HEAD`).split("\n").forEach((f) => f && changed.add(f));
-          git(cwd, "status", "--porcelain").split("\n").forEach((l) => l && changed.add(l.slice(3).trim()));
-        } catch { /* ignore */ }
-        const bad = [...changed].filter((f) => !f.startsWith(".ai/") && !matchesAny(all, f));
-        if (bad.length) violations = `\n\nOWNERSHIP VIOLATIONS (changed outside owned globs; bash can bypass write guards): ${bad.join(", ")}`;
+      if (useSliceWt) {
+        const order: string[] = plan.order.flat().filter((s: string) => p.tasks.some((t: any) => t.slice === s && okSlices[s]));
+        const { merged, conflicts } = (mergeSlices as any)(cwd, slug, order);
+        for (const m of merged) {
+          withState(cwd, (st: any) => { st.slices[m.slice] = { status: "merged", commit: m.commit }; });
+          (removeSliceWorktree as any)(cwd, slug, m.slice, { deleteBranch: true });
+        }
+        for (const c of conflicts) withState(cwd, (st: any) => { st.slices[c.slice] = { status: "failed", worktree: p.tasks.find((t: any) => t.slice === c.slice)?.__wt }; });
+        for (const t of p.tasks) if (!okSlices[t.slice]) withState(cwd, (st: any) => { st.slices[t.slice] = { status: "failed", worktree: t.__wt }; });
+        preface = `SLICE MERGE (deterministic plan order): merged=[${merged.map((m: any) => m.slice).join(", ")}]` +
+          (conflicts.length ? `; CONFLICTS (merge aborted, branch relay/${slug}--<slice> and worktree kept): ${conflicts.map((c: any) => `${c.slice}[${c.files.join(", ")}]`).join("; ")}. Re-delegate the conflicting slice sequentially (single mode) after fixing the plan's file ownership.` : "") +
+          (p.tasks.some((t: any) => !okSlices[t.slice]) ? `; failed slices (not merged, worktrees kept): ${p.tasks.filter((t: any) => !okSlices[t.slice]).map((t: any) => t.slice).join(", ")}` : "") + "\n\n";
       }
-      return text(results.join("\n\n") + violations);
+
+      const strays: string[] = (quarantineStrays as any)(cwd, featureDir());
+      const strayNote = strays.length ? `\n\nSTRAY FILES moved to ${featureDir()}/_quarantine/ (not in the allowed artefact layout): ${strays.join(", ")}` : "";
+      return text(preface + results.join("\n\n") + strayNote);
     },
   });
 

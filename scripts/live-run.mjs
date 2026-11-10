@@ -19,6 +19,7 @@ const log = fs.createWriteStream(logFile);
 const proc = spawn(process.execPath, [cli, "--mode", "rpc", "--no-session", "-e", path.join(home, "extensions/harness/index.ts"),
   "--skill", path.join(home, "skills/relay"), "--model", model], { cwd: repo, stdio: ["pipe", "pipe", "inherit"], env: process.env });
 
+const startedAt = Date.now() - 2000;
 const send = (o) => proc.stdin.write(JSON.stringify(o) + "\n");
 let done;
 let finished = new Promise((r) => (done = r));
@@ -45,10 +46,12 @@ for (let n = 0; ; n++) {
   await finished;
   const wtRoot = path.join(path.dirname(repo), path.basename(repo) + ".relay-worktrees");
   const stateFiles = (fs.existsSync(wtRoot) ? fs.readdirSync(wtRoot, { withFileTypes: true }) : []).filter((d) => d.isDirectory() && (!process.env.RELAY_SLUG || d.name === process.env.RELAY_SLUG))
-    .map((d) => path.join(wtRoot, d.name, ".ai", d.name, "state.json")).filter(fs.existsSync);
+    .map((d) => path.join(wtRoot, d.name, ".ai", d.name, "state.json"))
+    // only features touched by this run (older worktrees have an older mtime)
+    .filter((f) => fs.existsSync(f) && fs.statSync(f).mtimeMs >= startedAt);
   const phases = stateFiles.map((f) => JSON.parse(fs.readFileSync(f, "utf8")).phase);
   console.log(`[agent ended] phases=${phases.join(",")} nudges=${n}`);
-  if (n >= maxNudges || phases.some((p) => p === "pr" || p === "done")) break;
+  if (n >= maxNudges || phases.some((p) => p === "done")) break;
   console.log("[NUDGE] sending generic continue message");
   finished = new Promise((r) => (done = r));
   send({ type: "prompt", message: "Continue the Relay workflow autonomously from the current phase until the pr phase is complete. Do not ask me questions; I approve all approvals." });
