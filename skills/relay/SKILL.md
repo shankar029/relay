@@ -20,8 +20,8 @@ You are the orchestrator. You coordinate; you do not write code. You write only 
 - Whole `.ai/` is committed. Keep evidence small, mask secrets, run `relay_secret_scan` before any commit.
 
 ## Setup
-1. Derive a kebab-case slug from the requirement. `harness_state init` (or `open` when resuming) creates `.ai/<slug>/` and the lock.
-2. Write `requirement.md` verbatim from the user (plus clarifications).
+1. Derive a kebab-case slug from the requirement. `harness_state init` creates a dedicated git worktree (branch `relay/<slug>`, sibling dir `<repo>.relay-worktrees/<slug>`), `.ai/<slug>/` inside it, and the lock; the path is recorded in state.json. Pass `worktree: false` only if the user asks to run in place; `base` picks the base ref (default HEAD). On `--resume`, `harness_state open` re-attaches to the existing worktree (found via its branch). The user's own checkout is never modified.
+2. From then on, **all paths are inside the worktree**: use the absolute worktree path for every file you write/read and in briefs (inputs as absolute paths). Workers run with the worktree as their cwd. Write `requirement.md` verbatim from the user (plus clarifications).
 3. Scale effort: a tiny change (one file, no new behaviour, obvious fix) skips research/spec/design: record this in decisions.md, delegate straight to one implementor slice, then checks, verifier, PR.
 
 ## Workflow (set phase with `harness_state set_phase`)

@@ -16,6 +16,8 @@ import { checkPlan } from "../../lib/plan.mjs";
 import { lessonsFor, addLesson } from "../../lib/lessons.mjs";
 // @ts-ignore
 import { scanText, maskText } from "../../lib/secrets.mjs";
+// @ts-ignore
+import { ensureWorktree, findWorktree, excludeHarnessFiles, branchFor, repoTop } from "../../lib/worktree.mjs";
 const S: any = S_;
 import { RELAY_HOME, loadAgents, runAgent, mapLimit } from "./run.ts";
 
@@ -32,6 +34,9 @@ export default function (pi: ExtensionAPI) {
   const role = IS_CHILD ? process.env.RELAY_ROLE || "unknown" : "relay";
   const owned: string[] = IS_CHILD && process.env.RELAY_OWNED ? JSON.parse(process.env.RELAY_OWNED) : [];
 
+  // Feature worktree (parent only). Children always run with cwd = the worktree.
+  let root: string | undefined;
+  const rootOf = (ctx: any): string => root ?? ctx.cwd ?? process.cwd();
   const featureDir = () => `.ai/${slug}`;
   const stateFile = (cwd: string) => path.join(cwd, featureDir(), "state.json");
   const withState = (cwd: string, fn: (st: any) => unknown) => {
@@ -46,7 +51,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("tool_call", async (event: any, ctx: any) => {
     if (!slug) return undefined;
     const input = event.input || {};
-    const cwd = ctx.cwd || process.cwd();
+    const cwd = rootOf(ctx);
     if (event.toolName === "write" || event.toolName === "edit") {
       const rel = posix(path.relative(cwd, path.resolve(cwd, String(input.path || ""))));
       const why = (checkWrite as any)({ role, rel, featureDir: featureDir(), owned });
@@ -139,33 +144,52 @@ export default function (pi: ExtensionAPI) {
       rule: Type.Optional(Type.String()),
       signature: Type.Optional(Type.String({ description: "failure signature; lesson_add requires counter failure:<signature> >= 2" })),
       takeover: Type.Optional(Type.Boolean()),
+      worktree: Type.Optional(Type.Boolean({ description: "init/open: default true = run the feature in its own git worktree (branch relay/<slug>); false = in place" })),
+      base: Type.Optional(Type.String({ description: "init: base ref for the new worktree branch (default HEAD)" })),
     }),
     async execute(_id: string, p: any, _s: any, _u: any, ctx: any) {
-      const cwd = ctx.cwd || process.cwd();
+      const repoCwd = ctx.cwd || process.cwd();
+      let cwd = rootOf(ctx);
       const lock = () => path.join(cwd, featureDir(), ".lock");
       try {
         if (p.action === "init") {
           if (!p.slug || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(p.slug)) return text("error: slug must be kebab-case");
           if (!p.requirement) return text("error: requirement required");
+          let wt: any;
+          if (p.worktree !== false) {
+            try { wt = ensureWorktree(repoCwd, p.slug, { base: p.base }); }
+            catch (e: any) { return text(`error: cannot create worktree (use worktree=false to run in place): ${e.message}`); }
+            excludeHarnessFiles(wt.path);
+          }
+          cwd = wt ? wt.path : repoCwd;
           slug = p.slug;
-          if (fs.existsSync(stateFile(cwd))) { slug = undefined; return text("error: feature already exists; use open"); }
+          if (fs.existsSync(stateFile(cwd))) { slug = undefined; return text(`error: feature already exists${wt ? ` in ${cwd}` : ""}; use open`); }
+          root = cwd;
           fs.mkdirSync(path.join(cwd, featureDir(), "evidence"), { recursive: true });
           fs.mkdirSync(path.join(cwd, featureDir(), "reports"), { recursive: true });
           const lk = S.acquireLock(lock());
-          if (!lk.ok) return text("error: lock held");
-          S.saveState(stateFile(cwd), S.newState({ slug, requirement: p.requirement }), schema("state"));
+          if (!lk.ok) { slug = undefined; root = undefined; return text("error: lock held"); }
+          const worktree = wt ? { path: wt.path, branch: wt.branch, base: wt.base, ...(wt.baseSha ? { baseSha: wt.baseSha } : {}) } : undefined;
+          S.saveState(stateFile(cwd), S.newState({ slug, requirement: p.requirement, worktree }), schema("state"));
           const lessons = path.join(cwd, ".ai", "lessons.md");
           if (!fs.existsSync(lessons)) fs.copyFileSync(path.join(RELAY_HOME, "templates", "lessons.md"), lessons);
-          return text(`initialised ${featureDir()}`);
+          return text(wt
+            ? `initialised ${featureDir()} in worktree ${wt.path} (branch ${wt.branch}, ${wt.created ? "created" : "re-attached"}). ALL work happens there: use absolute paths under ${wt.path} for every write/read of feature files.`
+            : `initialised ${featureDir()} in place (no worktree) at ${cwd}`);
         }
         if (p.action === "open") {
           slug = p.slug;
           if (!slug) return text("error: slug required");
+          const found = p.worktree === false ? undefined : (() => { try { return findWorktree(repoCwd, slug); } catch { return undefined; } })();
+          cwd = found ? found.path : repoCwd;
+          if (!fs.existsSync(stateFile(cwd))) { slug = undefined; return text(`error: no .ai/${p.slug}/state.json in ${cwd}${found ? "" : ` (no worktree on branch ${branchFor(p.slug)} found)`}`); }
+          root = cwd;
           const lk = S.acquireLock(lock(), { takeover: !!p.takeover });
-          if (!lk.ok) { slug = undefined; return text(`lock held by pid ${lk.pid} since ${lk.timestamp} (stale=${lk.stale}). If stale, confirm with the user and retry with takeover=true.`); }
+          if (!lk.ok) { slug = undefined; root = undefined; return text(`lock held by pid ${lk.pid} since ${lk.timestamp} (stale=${lk.stale}). If stale, confirm with the user and retry with takeover=true.`); }
+          if (found) excludeHarnessFiles(found.path);
           const { state, errors } = S.loadState(stateFile(cwd), schema("state"));
           if (!state) return text(`state.json corrupt/invalid: ${errors.join("; ")}. Re-run the producing step.`);
-          const report: any = { phase: state.phase, hashMismatches: S.verifyArtifacts(state, cwd), runningSteps: [], missingCommits: [], pendingQuestions: state.pendingQuestions, pendingApprovals: [] };
+          const report: any = { phase: state.phase, worktree: state.worktree ? { ...state.worktree, path: cwd } : null, hashMismatches: S.verifyArtifacts(state, cwd), runningSteps: [], missingCommits: [], pendingQuestions: state.pendingQuestions, pendingApprovals: [] };
           for (const [id, s] of Object.entries<any>(state.steps)) if (s.status === "running") report.runningSteps.push(id);
           for (const [id, s] of Object.entries<any>(state.slices)) {
             if (s.status !== "merged" || !s.commit) continue;
@@ -240,7 +264,7 @@ export default function (pi: ExtensionAPI) {
       if (!slug) return text("error: no active feature");
       if (!ctx.hasUI) return text("error: no interactive UI; ask the user in chat and wait");
       const ok = await ctx.ui.confirm(`Approve ${p.name}?`, p.message);
-      withState(ctx.cwd || process.cwd(), (st: any) => { st.approvals[p.name] = ok ? "approved" : "rejected"; });
+      withState(rootOf(ctx), (st: any) => { st.approvals[p.name] = ok ? "approved" : "rejected"; });
       return text(ok ? `${p.name}: approved` : `${p.name}: rejected; ask the user for feedback and loop`);
     },
   });
@@ -252,7 +276,7 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({ only: Type.Optional(Type.Array(Type.String())) }),
     async execute(_id: string, p: any, _s: any, _u: any, ctx: any) {
       if (!slug) return text("error: no active feature");
-      const cwd = ctx.cwd || process.cwd();
+      const cwd = rootOf(ctx);
       const checks = readJson(stateFile(cwd)).checks as Record<string, string>;
       const rows: string[] = [];
       let allOk = true;
@@ -276,7 +300,7 @@ export default function (pi: ExtensionAPI) {
     description: "Heuristic secret scan of .ai/ and the staged diff. Run before committing.",
     parameters: Type.Object({}),
     async execute(_id: string, _p: any, _s: any, _u: any, ctx: any) {
-      const cwd = ctx.cwd || process.cwd();
+      const cwd = rootOf(ctx);
       const hits: string[] = [];
       const walk = (d: string) => {
         for (const e of fs.existsSync(d) ? fs.readdirSync(d, { withFileTypes: true }) : []) {
@@ -318,7 +342,7 @@ export default function (pi: ExtensionAPI) {
     }),
     async execute(_id: string, p: any, signal: any, _u: any, ctx: any) {
       if (!slug) return text("error: no active feature; call harness_state init/open first");
-      const cwd = ctx.cwd || process.cwd();
+      const cwd = rootOf(ctx);
       const agents = loadAgents().filter((a) => a.name !== "relay");
       if (p.mode === "single" && p.tasks.length !== 1) return text("error: single mode needs exactly one task");
 
@@ -404,7 +428,7 @@ export default function (pi: ExtensionAPI) {
     description: "Show the active Relay feature state",
     handler: async (_args: string, ctx: any) => {
       if (!slug) { ctx.ui.notify("No active Relay feature", "info"); return; }
-      const st = readJson(stateFile(ctx.cwd || process.cwd()));
+      const st = readJson(stateFile(rootOf(ctx)));
       const steps = Object.entries<any>(st.steps).map(([k, v]) => `${k}:${v.status}`).join(" ");
       ctx.ui.notify(`${st.slug} phase=${st.phase} ${steps}`, "info");
     },

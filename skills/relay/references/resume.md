@@ -1,6 +1,9 @@
 # Resume protocol
 
-Disk is the source of truth. `/skill:relay --resume [slug]` (no slug: pick from `.ai/*/state.json`, ask if several).
+Disk is the source of truth. `/skill:relay --resume [slug]` (no slug: list worktrees on `relay/*` branches via `git worktree list`, and `.ai/*/state.json`; ask if several).
+
+## Worktree
+Each feature lives in its own git worktree on branch `relay/<slug>`; `.ai/<slug>/` is inside it and is committed with the feature. state.json records `worktree {path, branch, base, baseSha}`. `harness_state open <slug>` finds the worktree by branch (works from the main checkout or from inside the worktree), switches all tool roots to it, and reports its path. If the worktree directory was deleted but the branch survives, `init` with the same slug re-creates the worktree on that branch; then `open` resumes from the committed artefacts.
 
 ## state.json
 phase; steps (pending/running/done/failed with inputs, outputs + sha256); counters {count, cap}; approvals; artifacts {path, sha256}; checks; slices (pending/running/merged/failed + commit); pendingQuestions. Written atomically (temp + rename) and schema-validated on every write. Write-ahead: pass `step` to `relay_subagent` so it is marked `running` (with inputs) before the agent starts and `done` (with outputs) after.

@@ -8,6 +8,17 @@
     "schemaVersion": { "const": 1 },
     "slug": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
     "requirement": { "type": "string" },
+    "worktree": {
+      "type": "object",
+      "required": ["path", "branch"],
+      "additionalProperties": false,
+      "properties": {
+        "path": { "type": "string" },
+        "branch": { "type": "string" },
+        "base": { "type": "string" },
+        "baseSha": { "type": "string" }
+      }
+    },
     "phase": { "enum": ["baseline", "requirement", "research", "spec", "spec-approval", "design", "design-review", "design-approval", "implement", "verify", "review", "pr", "done"] },
     "createdAt": { "type": "string" },
     "updatedAt": { "type": "string" },
