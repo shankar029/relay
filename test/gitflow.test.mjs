@@ -85,10 +85,13 @@ test("commitArtefacts commits .ai/<slug> without lock/quarantine and refuses sec
     w(repo, `${FD}/spec.md`, "spec text here for the feature");
     w(repo, `${FD}/.lock`, "lock");
     w(repo, `${FD}/_quarantine/x.md`, "q");
+    w(repo, `${FD}/state.json.tmp-123`, "{}");
+    w(repo, ".ai/lessons.md", "lesson\n");
+    fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), ".ai/*/.lock\n.ai/*/_quarantine/\n*.tmp-*\n");
     const r = commitArtefacts(repo, FD, "relay: artefacts");
     assert.equal(r.ok, true);
-    const files = git(repo, "show", "--name-only", "--format=", "HEAD").split("\n");
-    assert.deepEqual(files, [`${FD}/spec.md`]);
+    const files = git(repo, "show", "--name-only", "--format=", "HEAD").split("\n").sort();
+    assert.deepEqual(files, [".ai/lessons.md", `${FD}/spec.md`].sort());
     assert.match(git(repo, "log", "-1", "--format=%B"), /Co-authored-by: Copilot App/);
     w(repo, `${FD}/notes.md`, "key = AKIAIOSFODNN7EXAMPLE\n");
     const bad = commitArtefacts(repo, FD, "relay: again");
