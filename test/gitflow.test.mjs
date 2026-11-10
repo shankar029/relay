@@ -128,7 +128,7 @@ test("parallel slice worktrees merge in plan order; conflicts abort only that sl
 
 test("policy: README readable by researcher/architect/verifier/reviewer; layout and verifier writes", () => {
   for (const role of ["relay-researcher", "relay-architect", "relay-verifier", "relay-reviewer"]) assert.ok(!checkRead({ role, rel: "README.md" }), role);
-  assert.ok(checkRead({ role: "relay-implementor", rel: "README.md" }));
+  assert.ok(!checkRead({ role: "relay-implementor", rel: "README.md" }));
   assert.ok(checkRead({ role: "relay-spec-writer", rel: "README.md" }));
   assert.ok(isLayoutFile(`${FD}/pr.md`, FD));
   assert.ok(isLayoutFile(`${FD}/evidence/a/b.txt`, FD));
