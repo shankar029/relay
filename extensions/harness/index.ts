@@ -7,7 +7,7 @@ import { Type } from "typebox";
 // @ts-ignore plain ESM helpers (see lib/)
 import { validate } from "../../lib/jsonschema.mjs";
 // @ts-ignore
-import { checkWrite, matchesAny } from "../../lib/policy.mjs";
+import { checkWrite, matchesAny, requiredOutputs, phaseRequires } from "../../lib/policy.mjs";
 // @ts-ignore
 import * as S_ from "../../lib/state.mjs";
 // @ts-ignore
@@ -220,6 +220,10 @@ export default function (pi: ExtensionAPI) {
           switch (p.action) {
             case "set_phase":
               if (!S.PHASES.includes(p.phase)) throw new Error(`unknown phase ${p.phase}`);
+              {
+                const miss = phaseRequires(p.phase, featureDir()).filter((f: string) => !fs.existsSync(path.join(cwd, f)));
+                if (miss.length) throw new Error(`cannot enter ${p.phase}: missing ${miss.join(", ")}. Re-run the producing worker.`);
+              }
               st.phase = p.phase; return `phase=${p.phase}`;
             case "step":
               if (p.status === "running") S.beginStep(st, p.name, { agent: p.agent });
@@ -277,7 +281,15 @@ export default function (pi: ExtensionAPI) {
     async execute(_id: string, p: any, _s: any, _u: any, ctx: any) {
       if (!slug) return text("error: no active feature");
       const cwd = rootOf(ctx);
-      const checks = readJson(stateFile(cwd)).checks as Record<string, string>;
+      let checks = (readJson(stateFile(cwd)).checks || {}) as Record<string, string>;
+      if (!Object.keys(checks).length) {
+        // fall back to package.json scripts so an unconfigured repo is not "green" by default
+        try {
+          const scripts = JSON.parse(fs.readFileSync(path.join(cwd, "package.json"), "utf8")).scripts || {};
+          checks = Object.fromEntries(["build", "typecheck", "lint", "test"].filter((n) => scripts[n]).map((n) => [n, `npm run ${n}`]));
+          if (Object.keys(checks).length) withState(cwd, (st: any) => { st.checks = checks; return "checks autodetected"; });
+        } catch { /* no package.json */ }
+      }
       const rows: string[] = [];
       let allOk = true;
       for (const name of ["build", "typecheck", "lint", "test"]) {
@@ -290,7 +302,7 @@ export default function (pi: ExtensionAPI) {
         S.writeFileAtomic(path.join(cwd, logRel), log.slice(-20000));
         rows.push(`${ok ? "PASS" : "FAIL"} ${name} (${logRel})${ok ? "" : "\n" + log.slice(-1500)}`);
       }
-      return text(`${allOk ? "ALL GREEN" : "RED"}\n${rows.join("\n") || "(no checks configured)"}`);
+      return text(`${allOk && rows.length ? "ALL GREEN" : rows.length ? "RED" : "NO CHECKS CONFIGURED: not green. Set them with harness_state action=checks (commands: {build,typecheck,lint,test})"}\n${rows.join("\n")}`);
     },
   });
 
@@ -368,18 +380,26 @@ export default function (pi: ExtensionAPI) {
       const runTask = async (t: any, i: number) => {
         const agent = agents.find((a) => a.name === t.agent);
         if (!agent) return `error: unknown agent ${t.agent}. Available: ${agents.map((a) => a.name).join(", ")}`;
+        // Tolerate bare names ("spec.md") and absolute paths; normalize to repo-relative.
+        t.brief.inputs = t.brief.inputs.map((f: string) => {
+          for (const c of [path.resolve(cwd, f), path.resolve(cwd, featureDir(), f), path.resolve(cwd, featureDir(), path.basename(f))]) {
+            if (fs.existsSync(c)) return posix(path.relative(cwd, c));
+          }
+          return f;
+        });
         const missing = t.brief.inputs.filter((f: string) => !fs.existsSync(path.resolve(cwd, f)));
-        if (missing.length) return `error: input files missing: ${missing.join(", ")}`;
+        if (missing.length) return `error: input files missing: ${missing.join(", ")}. Paths are relative to the worktree root, e.g. ${featureDir()}/spec.md`;
         let ownedGlobs: string[] = [];
         if (t.agent === "relay-implementor") {
           const sl = plan.slices.find((s: any) => s.id === t.slice);
-          if (!sl) return `error: unknown slice ${t.slice}`;
+          if (!sl) return `error: unknown slice ${t.slice}. Set task.slice to one of: ${plan.slices.map((s: any) => s.id).join(", ")}`;
           ownedGlobs = sl.files.own;
         }
         const lf = path.join(cwd, ".ai", "lessons.md");
         const lessons = fs.existsSync(lf) ? lessonsFor(fs.readFileSync(lf, "utf8"), t.agent) : [];
         const sub = (s: string) => s.replaceAll("{previous}", prev[i - 1] ?? "");
         const b = t.brief;
+        const required = requiredOutputs(t.agent, featureDir(), t.slice);
         const task = [
           `## Objective\n${sub(b.objective)}`,
           `## Output format\n${sub(b.outputFormat)}`,
@@ -387,22 +407,50 @@ export default function (pi: ExtensionAPI) {
           `## Boundaries\n${sub(b.boundaries)}`,
           `## Inputs (read in full)\n${b.inputs.map((f: string) => `- ${f}`).join("\n")}`,
           `## Lessons for your role\n${lessons.map((l: any) => `- ${l.symptom} => ${l.rule}`).join("\n") || "(none)"}`,
+          required.length ? `## Required output files (authoritative; override any other file names above)\nWrite exactly these files with the write tool, relative to the working directory:\n${required.map((f) => `- ${f}`).join("\n")}\nThe task is not done until each exists on disk.` : "",
+          t.agent === "relay-architect" ? `## plan.json must validate against this JSON Schema exactly (no extra properties; slice ids kebab-case; contracts are objects {name,pinned,location}; slice.contracts are strings; slices need dependsOn; top-level needs contracts, slices, order (array of arrays of slice ids), independence)\n\`\`\`json\n${JSON.stringify(schema("plan"))}\n\`\`\`` : "",
           `Feature dir: ${featureDir()}${t.slice ? `\nSlice: ${t.slice}` : ""}`,
-        ].join("\n\n");
+        ].filter(Boolean).join("\n\n");
         if (t.step) withState(cwd, (st: any) => S.beginStep(st, t.step, { agent: t.agent, inputs: b.inputs }));
         if (t.slice) withState(cwd, (st: any) => { st.slices[t.slice] = { ...(st.slices[t.slice] || {}), status: "running" }; });
-        const r = await runAgent({
+        const planProblems = () => {
+          if (t.agent !== "relay-architect") return [] as string[];
+          try {
+            const pl = JSON.parse(fs.readFileSync(path.join(cwd, featureDir(), "plan.json"), "utf8"));
+            const e = validate(schema("plan"), pl);
+            return e.length ? e : checkPlan(pl);
+          } catch (e: any) { return [`plan.json unreadable: ${e.message}`]; }
+        };
+        const problems = () => [
+          ...required.filter((f) => !fs.existsSync(path.join(cwd, f))).map((f) => `missing output ${f}`),
+          ...(required.every((f) => fs.existsSync(path.join(cwd, f))) ? planProblems() : []),
+        ];
+        let r = await runAgent({
           cwd, agent, task, signal,
           env: { RELAY_ROLE: agent.name, RELAY_FEATURE: slug!, RELAY_OWNED: JSON.stringify(ownedGlobs) },
         });
-        const ok = r.exitCode === 0 && r.stopReason !== "error";
+        let probs = problems();
+        if (r.exitCode === 0 && probs.length) {
+          // one automatic retry with concrete feedback
+          r = await runAgent({
+            cwd, agent, signal,
+            task: `${task}\n\n## Previous attempt failed validation. Fix exactly this and write the files to disk:\n${probs.map((x) => `- ${x}`).join("\n")}`,
+            env: { RELAY_ROLE: agent.name, RELAY_FEATURE: slug!, RELAY_OWNED: JSON.stringify(ownedGlobs) },
+          });
+          probs = problems();
+        }
+        const ranOk = r.exitCode === 0 && r.stopReason !== "error";
+        const absent = probs;
+        const ok = ranOk && absent.length === 0;
         if (t.step) {
-          const outputs = (t.outputs || []).filter((f: string) => fs.existsSync(path.join(cwd, f)))
+          const outs = Array.from(new Set([...(t.outputs || []), ...required]));
+          const outputs = outs.filter((f: string) => fs.existsSync(path.join(cwd, f)))
             .map((f: string) => ({ path: posix(f), sha256: S.sha256File(path.join(cwd, f)) }));
-          withState(cwd, (st: any) => S.finishStep(st, t.step, { status: ok ? "done" : "failed", outputs, error: ok ? undefined : (r.errorMessage || r.stderr.slice(-500)) }));
+          withState(cwd, (st: any) => S.finishStep(st, t.step, { status: ok ? "done" : "failed", outputs, error: ok ? undefined : (absent.length ? `missing outputs: ${absent.join(", ")}` : r.errorMessage || r.stderr.slice(-500)) }));
         }
         prev[i] = r.output;
-        return `### ${t.agent}${t.slice ? ` (${t.slice})` : ""} exit=${r.exitCode}${ok ? "" : " FAILED"}\n${r.output || r.stderr.slice(-800)}`;
+        const missNote = absent.length ? `\nMISSING REQUIRED OUTPUTS: ${absent.join(", ")}. Re-run this worker; do not proceed.` : "";
+        return `### ${t.agent}${t.slice ? ` (${t.slice})` : ""} exit=${r.exitCode}${ok ? "" : " FAILED"}\n${r.output || r.stderr.slice(-800)}${missNote}`;
       };
 
       let results: string[];
