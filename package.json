@@ -1,0 +1,20 @@
+{
+  "name": "relay",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Relay: orchestrator + specialist-agent harness from requirement to PR",
+  "scripts": {
+    "validate": "node scripts/validate.mjs",
+    "test": "node --test test/",
+    "typecheck": "tsc -p extensions/harness/tsconfig.json --noEmit",
+    "check": "npm run validate && npm test && npm run typecheck"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@types/node": "^22.0.0",
+    "typebox": "*",
+    "typescript": "^5.6.0"
+  }
+}
