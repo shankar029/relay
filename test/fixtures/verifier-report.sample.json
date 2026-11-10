@@ -1,0 +1,8 @@
+{
+  "scenarios": [
+    { "item": "export-csv", "scenario": "download-contains-header-row", "result": "pass", "evidence": [".ai/export-csv/evidence/download.txt"] }
+  ],
+  "exploratory": [{ "severity": "low", "title": "Slow first export", "description": "First export takes 3s." }],
+  "toolsInstalled": [],
+  "blocked": { "isBlocked": false }
+}

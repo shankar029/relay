@@ -1,0 +1,9 @@
+{
+  "contracts": [{ "name": "ReportRow", "pinned": true, "location": "src/types/report.ts" }],
+  "slices": [
+    { "id": "api-endpoint", "title": "CSV endpoint", "features": ["export-csv"], "files": { "own": ["src/api/**"], "read": ["src/types/**"] }, "dependsOn": [], "contracts": ["ReportRow"] },
+    { "id": "ui-button", "title": "Export button", "features": ["export-csv"], "files": { "own": ["src/ui/**"] }, "dependsOn": [], "contracts": ["ReportRow"] }
+  ],
+  "order": [["api-endpoint", "ui-button"]],
+  "independence": { "parallelizable": true, "justification": "Disjoint directories; ReportRow pinned." }
+}

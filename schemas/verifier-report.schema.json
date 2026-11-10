@@ -1,0 +1,53 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Relay verifier report (reports/verify-*.json)",
+  "type": "object",
+  "required": ["scenarios", "exploratory", "toolsInstalled", "blocked"],
+  "additionalProperties": false,
+  "properties": {
+    "scenarios": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["item", "scenario", "result", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "item": { "type": "string" },
+          "scenario": { "type": "string" },
+          "result": { "enum": ["pass", "fail", "blocked"] },
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "notes": { "type": "string" }
+        }
+      }
+    },
+    "exploratory": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "title", "description"],
+        "additionalProperties": false,
+        "properties": {
+          "severity": { "enum": ["low", "medium", "high", "critical"] },
+          "title": { "type": "string" },
+          "description": { "type": "string" },
+          "evidence": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "toolsInstalled": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["tool", "location"],
+        "additionalProperties": false,
+        "properties": { "tool": { "type": "string" }, "location": { "type": "string" }, "command": { "type": "string" } }
+      }
+    },
+    "blocked": {
+      "type": "object",
+      "required": ["isBlocked"],
+      "additionalProperties": false,
+      "properties": { "isBlocked": { "type": "boolean" }, "reason": { "type": "string" } }
+    }
+  }
+}

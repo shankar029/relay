@@ -1,0 +1,18 @@
+{
+  "items": [
+    {
+      "name": "export-csv",
+      "title": "Export report as CSV",
+      "description": "Users can download the monthly report as CSV.",
+      "scenarios": [
+        {
+          "name": "download-contains-header-row",
+          "steps": ["Open the report page", "Click Export CSV", "Inspect the downloaded file"],
+          "passes": true,
+          "evidence": [".ai/export-csv/evidence/download.txt"]
+        }
+      ],
+      "passes": true
+    }
+  ]
+}

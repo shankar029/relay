@@ -1,0 +1,70 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Relay state.json",
+  "type": "object",
+  "required": ["schemaVersion", "slug", "requirement", "phase", "createdAt", "updatedAt", "steps", "counters", "approvals", "artifacts", "checks", "slices", "pendingQuestions"],
+  "additionalProperties": false,
+  "properties": {
+    "schemaVersion": { "const": 1 },
+    "slug": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+    "requirement": { "type": "string" },
+    "phase": { "enum": ["baseline", "requirement", "research", "spec", "spec-approval", "design", "design-review", "design-approval", "implement", "verify", "review", "pr", "done"] },
+    "createdAt": { "type": "string" },
+    "updatedAt": { "type": "string" },
+    "steps": { "type": "object", "additionalProperties": { "$ref": "#/definitions/step" } },
+    "counters": { "type": "object", "additionalProperties": { "$ref": "#/definitions/counter" } },
+    "approvals": { "type": "object", "additionalProperties": { "enum": ["pending", "approved", "rejected"] } },
+    "artifacts": { "type": "object", "additionalProperties": { "$ref": "#/definitions/fileRef" } },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "build": { "type": "string" },
+        "typecheck": { "type": "string" },
+        "lint": { "type": "string" },
+        "test": { "type": "string" },
+        "init": { "type": "string" }
+      }
+    },
+    "slices": { "type": "object", "additionalProperties": { "$ref": "#/definitions/slice" } },
+    "pendingQuestions": { "type": "array", "items": { "type": "string" } }
+  },
+  "definitions": {
+    "fileRef": {
+      "type": "object",
+      "required": ["path", "sha256"],
+      "additionalProperties": false,
+      "properties": { "path": { "type": "string" }, "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" } }
+    },
+    "step": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["pending", "running", "done", "failed"] },
+        "agent": { "type": "string" },
+        "inputs": { "type": "array", "items": { "type": "string" } },
+        "outputs": { "type": "array", "items": { "$ref": "#/definitions/fileRef" } },
+        "startedAt": { "type": "string" },
+        "finishedAt": { "type": "string" },
+        "error": { "type": "string" }
+      }
+    },
+    "counter": {
+      "type": "object",
+      "required": ["count", "cap"],
+      "additionalProperties": false,
+      "properties": { "count": { "type": "integer", "minimum": 0 }, "cap": { "type": "integer", "minimum": 1 } }
+    },
+    "slice": {
+      "type": "object",
+      "required": ["status"],
+      "additionalProperties": false,
+      "properties": {
+        "status": { "enum": ["pending", "running", "merged", "failed"] },
+        "commit": { "type": "string" },
+        "worktree": { "type": "string" }
+      }
+    }
+  }
+}
