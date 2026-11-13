@@ -86,6 +86,7 @@ test("commitArtefacts commits .ai/<slug> without lock/quarantine and refuses sec
     w(repo, `${FD}/.lock`, "lock");
     w(repo, `${FD}/_quarantine/x.md`, "q");
     w(repo, `${FD}/state.json.tmp-123`, "{}");
+    w(repo, `${FD}/verify-tools/verify-1.mjs`, "console.log(1)");
     w(repo, ".ai/lessons.md", "lesson\n");
     fs.appendFileSync(path.join(repo, ".git", "info", "exclude"), ".ai/*/.lock\n.ai/*/_quarantine/\n*.tmp-*\n");
     const r = commitArtefacts(repo, FD, "relay: artefacts");
