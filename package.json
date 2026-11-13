@@ -3,6 +3,14 @@
   "version": "0.1.0",
   "type": "module",
   "description": "Relay: orchestrator + specialist-agent harness from requirement to PR",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/shankar029/relay.git"
+  },
+  "homepage": "https://github.com/shankar029/relay#readme",
+  "bugs": {
+    "url": "https://github.com/shankar029/relay/issues"
+  },
   "keywords": [
     "pi-package",
     "pi-extension",

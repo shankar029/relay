@@ -426,6 +426,10 @@ Relay has been run live in pi several times against small sample Node APIs, with
 - The bash write guards and the holdout read guard are **pattern based** and can be obfuscated around (for example `python -c "open('../x','w')"`). The ownership revert is the backstop for writes inside the repo. Reads of ignored or untracked paths are not policed.
 - Evidence comes from a few small sample repos and one platform (Windows). Results elsewhere are unknown. Token use and duration vary between runs.
 
+## Publishing
+
+Publishing to npm is done by `.github/workflows/publish.yml` when a GitHub release is published (or by running the workflow manually). It runs `npm run check`, checks the package version matches the release tag, then runs `npm publish --access public --provenance`. One-time setup: create an npm automation or granular access token and save it as the repo secret `NPM_TOKEN`. Not yet run: the workflow has not been exercised.
+
 ## Copilot port
 
 Relay can be installed into GitHub Copilot (CLI and VS Code agent mode). It is a weaker host than pi: the orchestrator follows Relay's rules by instruction, and only a `preToolUse` hook enforces anything.
