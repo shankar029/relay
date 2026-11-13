@@ -150,6 +150,69 @@ node scripts/live-run.mjs <repo> <provider/model> "<requirement>" [--log f] [--n
 
 Runs the orchestrator in pi RPC mode. Approvals are asked on stdin (`Approve? [y/N]`; denied with no TTY). `--simulate-approvals` auto-approves and logs `[SIMULATED APPROVAL]`; use it only for unattended tests.
 
+## How to use Relay
+
+### Start a run
+
+Interactive (recommended), from the repo you want to change:
+
+```bash
+pi -e /path/to/relay/extensions/harness/index.ts --skill /path/to/relay/skills/relay
+/skill:relay Add todo archiving and a public HTML dashboard
+```
+
+Scripted, via the live driver (RPC mode, one prompt, no back-and-forth):
+
+```bash
+node scripts/live-run.mjs /path/to/your/repo github-copilot/claude-sonnet-5.5 "Add todo archiving" --log run.log
+# add --simulate-approvals only for unattended tests; --nudges N sends generic "continue" nudges
+```
+
+The first model argument is the orchestrator; specialists use `tiers` from `relay.config.json`. The driver tells the orchestrator not to ask questions, so use interactive pi when you want to steer.
+
+### A worked session
+
+1. **You type** `/skill:relay <requirement>`. Relay creates branch `relay/<slug>` and a worktree `<repo>.relay-worktrees/<slug>`, and runs the baseline checks. *Check:* it tells you the worktree path; if baseline tests are red it asks whether to continue.
+2. **Research** runs. If something can't be answered from the code, Relay asks you (a pending question, saved in `state.json`). *Check:* `research.md` and its conflicts/gaps list.
+3. **Spec ready – approval prompt #1.** Read `.ai/<slug>/spec.md` and `features.json` (the visible scenarios). The hidden holdout scenarios are deliberately not shown to you or the implementors. Approve, or decline with feedback ("add an error case for X", "drop Y"); Relay re-runs the spec writer. Up to 3 rounds. *Check:* every requirement has a concrete, observable scenario.
+4. **Design ready – approval prompt #2.** Read `design.md` (and `design.html`) and `plan.json`: slices, the files each owns, which can run in parallel. Approve or send changes (3 rounds). *Check:* slices don't overlap, each code slice has tests.
+5. **Implement, verify, review** run without prompts. Failures loop back to implementors within the caps; anything past a cap is escalated to you. *Check:* `reports/verify-*.json`, `evidence/`, `reports/review.md`.
+6. **PR draft.** Relay writes `pr.md`, scans for secrets, commits `.ai/<slug>/` on the feature branch and sets the run to `done`. It does not push. At `supervised` autonomy you also approve the PR text first.
+
+### What each step takes in and produces
+
+| Step | Input | What it does | Output |
+|---|---|---|---|
+| baseline | repo | runs the repo's own checks | `state.json` check results |
+| requirement | your text | records it and your decisions | `requirement.md`, `decisions.md` |
+| research | requirement, `AGENTS.md`, README | read-only mapping with `file:line` citations; merged | `research-<topic>.md` → `research.md` |
+| spec | requirement, research | spec, visible and holdout scenarios, spec-lint warnings | `spec.md`, `features.json`, `holdout/scenarios.json` |
+| design | spec, features, research | slices, ownership, test paths | `design.md`, `design.html`, `plan.json` |
+| implement | plan, design, spec | one implementor per slice in a sub-worktree; merge back; test gate | code + tests, `reports/impl-*.md` |
+| verify | spec, features, plan | checks every scenario, saves proof, scores holdouts | `evidence/**`, `reports/verify-*.json`, `holdout/results.json` |
+| review | diff, spec, design | one reviewer per lens; consolidate; re-run blocking lenses (max 2 rounds) | `reports/review-<lens>.json`, `review.md` |
+| pr | everything | writes PR text, scans secrets, commits | `pr.md`, commit on `relay/<slug>` |
+
+### Steering a run
+
+- **Answering questions:** reply in the pi chat; Relay records the answer in `decisions.md` so it survives a restart.
+- **Changing the spec or design:** decline the approval prompt and say what to change, or edit the chat reply ("also cover empty input"). Relay re-delegates with your feedback.
+- **Resuming:** `/skill:relay --resume [slug]` (no slug lists `relay/*` worktrees). Relay re-attaches to the worktree, checks artefact hashes, re-runs interrupted steps and re-asks open questions or approvals. Details: `skills/relay/references/resume.md`.
+
+### Finish: push and open the PR yourself
+
+Relay stops with a committed branch. Review it, then:
+
+```bash
+cd <repo>.relay-worktrees/<slug>
+git log --oneline            # check the commits
+cat .ai/<slug>/pr.md         # PR title/body and the suggested gh command
+git push -u origin relay/<slug>
+gh pr create --title "<title>" --body-file .ai/<slug>/pr.md
+```
+
+`pr.md` includes the traceability table, check results, verification evidence, review outcome and caveats. The holdout directory is never committed. Remove the worktree afterwards with `git worktree remove <path>`.
+
 ## Repo layout
 
 | Path | Purpose |
