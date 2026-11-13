@@ -122,3 +122,9 @@ test("spec lint flags vague or unobservable scenarios", () => {
   assert.ok(w.some((x) => x.includes("no steps")));
   assert.ok(w.some((x) => x.includes("no scenarios")));
 });
+
+test("holdout guard blocks substitution and scenarios.json name probes", () => {
+  for (const c of ["cat $(echo hold)out/a", "find . -name scenarios.json", "cat .ai/x/hold*/sce*"])
+    assert.ok(holdoutAccessProblem("relay-reviewer", JSON.stringify({ command: c })), c);
+  assert.equal(holdoutAccessProblem("relay-reviewer", JSON.stringify({ command: "npm test" })), null);
+});
