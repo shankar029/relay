@@ -11,7 +11,7 @@
     "agents",
     "orchestrator"
   ],
-  "license": "UNLICENSED",
+  "license": "MIT",
   "pi": {
     "extensions": [
       "./extensions/harness/index.ts"
@@ -34,7 +34,8 @@
     "templates",
     "docs",
     "relay.config.json",
-    "README.md"
+    "README.md",
+    "LICENSE"
   ],
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",
