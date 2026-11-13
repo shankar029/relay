@@ -1,32 +1,137 @@
 # Relay
 
-Minimalist harness that takes a requirement to a PR using an orchestrator skill plus specialist agents. Targets the [pi coding agent](https://github.com/earendil-works/pi) first; GitHub Copilot support is partial (see below).
+**Relay turns a plain-English requirement into a reviewed, tested, ready-to-open pull request** by coordinating a team of AI specialist agents, with guard rails that a single chat agent doesn't have.
 
-## Layout
-| Path | Purpose |
-|---|---|
-| `skills/relay/` | Orchestrator skill (`/skill:relay <requirement>`), with `references/` for brief template, resume, workflow |
-| `agents/` | `relay-researcher`, `-spec-writer`, `-architect`, `-implementor`, `-verifier`, `-reviewer`, plus `relay.md` (orchestrator role) |
-| `extensions/harness/` | pi extension: `relay_subagent` (isolated pi processes; single/parallel/chain, forked from pi's subagent example), `harness_state`, `relay_approval`, `relay_checks`, `relay_secret_scan`, write/commit guards |
-| `schemas/` | JSON Schemas: state, features, plan, verifier report |
-| `templates/` | brief, spec, design, lessons |
-| `lib/` | shared logic (state, locks, plan checks, policy, lessons, secrets) |
-| `scripts/` | `validate.mjs`, `gen-copilot-agents.mjs` |
+It runs on the [pi coding agent](https://github.com/earendil-works/pi) today. A GitHub Copilot port is planned but not built (see [Status](#status-and-known-limitations)).
 
-## Workflow
-baseline checks -> requirement -> research -> spec -> user approves -> design (architect) -> orchestrator review + user approves -> implement slices -> verify (QA-style, evidence) -> review -> PR with traceability table. Loops are capped and escalate to the user. Artefacts live in `.ai/<feature-slug>/` in the target repo and are committed so runs resume anywhere. Details: `skills/relay/references/workflow.md`.
+## The problem
 
-## Use with pi
+Asking one AI agent to "build this feature" works for small things. For anything bigger it tends to: skip the spec, mark its own homework, forget tests, wander across unrelated files, and leave no trail you can audit or resume. Relay splits the job into roles, makes each role write a small artefact, and has the *harness* (not the model) enforce the rules.
+
+## How it works in 60 seconds
+
+You give Relay a requirement. An **orchestrator** (the `relay` skill) walks a fixed pipeline and delegates each step to a **specialist agent** that runs as its own isolated pi process. You approve the key gates. Everything is written to `.ai/<slug>/` inside a dedicated git worktree for the feature.
+
+```mermaid
+flowchart LR
+  R[Requirement] --> B[Baseline checks]
+  B --> RS[Research<br/>1-4 parallel topics]
+  RS --> SP[Spec + hidden<br/>holdout scenarios]
+  SP --> A1{{You approve spec}}
+  A1 --> D[Design + slice plan]
+  D --> A2{{You approve design}}
+  A2 --> I[Implement slices<br/>parallel where independent]
+  I --> V[Verify<br/>evidence + holdout score]
+  V --> RV[Review<br/>parallel lenses]
+  RV --> PR[pr.md + commit<br/>no push]
 ```
+
+Plain-language walkthrough:
+
+1. **Baseline** – run the repo's own checks (e.g. `npm test`) so Relay knows what "green" means before touching anything.
+2. **Research** – read-only researchers map the code. Small feature: one researcher. Larger: 2-4, each on a topic (data layer, API, UI, tests). Every claim must cite `file:line`. The orchestrator merges them into `research.md` and lists conflicts and gaps instead of smoothing them over.
+3. **Spec** – a spec writer produces `spec.md`, `features.json` (visible scenarios) and **holdout** scenarios that nobody but the verifier may see. A spec-lint step warns about vague or untestable wording. **You approve.**
+4. **Design** – an architect writes `design.md` and `plan.json`: slices, owned files, dependencies, and a test path for each code slice. The orchestrator reviews it, **you approve**.
+5. **Implement** – implementors build slices. Independent slices run in parallel, each in its own sub-worktree, then merge back in plan order.
+6. **Verify** – an independent verifier checks every scenario against the running code, saves evidence, and is the only role that can mark a scenario as passing. It also runs the hidden holdouts.
+7. **Review** – one reviewer per lens (correctness, security, tests, performance by default) runs in parallel. Findings need a `file:line` citation or they are dropped. Blocking findings go back to implementors and only the affected lenses re-run.
+8. **PR** – Relay writes `pr.md` (summary, traceability table, evidence, review outcome, caveats), runs a secret scan, commits `.ai/<slug>/` on the feature branch and marks the run `done`. **It never pushes or opens a PR**; you do that with the `gh pr create` text it prepares.
+
+## The agents
+
+| Agent | Job | Can write |
+|---|---|---|
+| `relay` (orchestrator) | Runs the pipeline, calls the harness tools, merges research and review output | `.ai/<slug>/` coordination files |
+| `relay-researcher` | Read-only investigation of one topic | `research-<topic>.md` |
+| `relay-spec-writer` | Spec, `features.json`, holdout scenarios | spec files, `holdout/scenarios.json` |
+| `relay-architect` | Design and slice plan | `design.md`, `plan.json` |
+| `relay-implementor` | Code and tests for one slice | only the files its slice owns |
+| `relay-verifier` | QA-style checks with evidence; sets `passes`; scores holdouts | `evidence/**`, `reports/verify-*.json`, `holdout/results.json` |
+| `relay-reviewer` | Reviews the diff through one lens | `reports/review-<lens>.json` |
+
+Agents are plain Markdown files in `agents/` (frontmatter: `name`, `description`, `tools`, `tier`). They declare a **tier**, never a model ID.
+
+## What ends up in `.ai/<slug>/`
+
+```
+.ai/<slug>/
+  state.json        phase, worktree + branch, approvals, counters, usage
+  requirement.md    decisions.md    research.md (+ research-<topic>.md)
+  spec.md           features.json   design.md   plan.json
+  evidence/         proof for each scenario and each check run
+  reports/          impl-*.md, verify-*.json, review-<lens>.json, review.md
+  pr.md             final PR text and traceability table
+  holdout/          hidden scenarios + results (never committed)
+```
+
+Because it is committed with the feature, a run can be resumed on any machine (`/skill:relay --resume`).
+
+## Safeguards
+
+These are enforced by the extension in `extensions/harness/`, not by asking the model nicely.
+
+- **One worktree per feature** – branch `relay/<slug>` in `<repo>.relay-worktrees/<slug>`. Your working copy is untouched.
+- **Write guards** – a role can only write its allowed files; `state.json`, `AGENTS.md`/`README.md`, `.env` and `.git` are protected; `git push` is blocked; only implementors may commit.
+- **Ownership revert** – after every agent run the harness diffs against the pre-run HEAD and reverts (and reports) out-of-ownership changes, even ones made through `bash`.
+- **Bash path confinement** – heuristic block on bash writes outside the worktree.
+- **Holdouts** – hidden end-to-end scenarios only the verifier may read. Read guards block every other role, including bash commands that mention the directory. The verifier reports a **satisfaction score** (fraction passing); `satisfactionThreshold` (default 1) must be met to enter review. The hard `passes` gate stays authoritative.
+- **Test gate** – an implementor slice that changes code without touching tests fails and is retried with feedback.
+- **Only the user approves** – approvals go through `relay_approval` (a UI confirm). Only the verifier can set `passes`, and only with existing evidence.
+- **Content gates** – `set_phase` checks schemas, recorded approvals, merged slices, verifier evidence for each passing scenario and the review report, not just file existence.
+- **Required checks** – `requiredChecks` (default `["test"]`) must be green on the current HEAD before review/PR.
+- **Caps** – implement, verify and review loops are counted and capped; review lens re-runs are limited to 2 rounds; exceeding a cap escalates instead of looping.
+- **Budget** – optional `maxSubagentCalls` / `maxTokens`; every delegated call records calls, turns and tokens in `state.usage`.
+- **Stray-file quarantine** – files in `.ai/<slug>/` outside the allowed layout are moved to `_quarantine/` and not committed.
+- **Secret scan** – runs before the final commit.
+
+### Autonomy levels
+
+`relay.config.json` → `"autonomy"`:
+
+| Level | Human approvals |
+|---|---|
+| `supervised` | spec, design and PR text |
+| `gated` (default) | spec and design |
+| `autonomous` | none (`relay_approval` auto-approves and says so) |
+
+Schema, check, holdout and review gates apply at every level.
+
+## Quick start (pi)
+
+Prerequisites: Node 20+, git, a pi install with a logged-in provider.
+
+```bash
 npm install
-pi -e ./extensions/harness/index.ts --skill ./skills/relay
-/skill:relay <requirement>
+cd /path/to/your/repo
+pi -e /path/to/relay/extensions/harness/index.ts --skill /path/to/relay/skills/relay
+# then inside pi:
+/skill:relay Add todo archiving and a public HTML dashboard
 /skill:relay --resume [slug]
 ```
-Agents are read from `agents/`. Optional `relay.config.json` maps tiers to models: `{"tiers":{"strong":"<model>","mid":"<model>","cheap":"<model>"}}` (looked up in the cwd, then the Relay repo).
 
-### Model setup on another machine
-`relay.config.json` holds `provider/model-id` strings; the machine must be able to reach them. Check with `pi --list-models`. If a model is not listed (for example a newer GitHub Copilot model), pi still accepts the id with a "not found ... using custom model id" warning and it works when the provider serves it. If the provider rejects pi's default API, add a custom entry in `~/.pi/agent/models.json`, which this repo's live runs needed for `claude-sonnet-5.5`:
+Agents are read from `agents/`. `relay.config.json` is looked up in the current directory, then in the Relay repo.
+
+### Configuration: `relay.config.json`
+
+```json
+{
+  "reviewLenses": ["correctness", "security", "tests", "performance"],
+  "autonomy": "gated",
+  "requiredChecks": ["test"],
+  "satisfactionThreshold": 1,
+  "budget": { "maxSubagentCalls": 60 },
+  "tiers": { "strong": "<provider/model>", "mid": "<provider/model>", "cheap": "<provider/model>" }
+}
+```
+
+- `tiers` maps each agent's tier to a model. No model IDs are hardcoded in agent files.
+- `reviewLenses` sets the review lenses (accessibility and API-contract lenses are for UI / endpoint diffs).
+- `requiredChecks` may include `lint` and `sast`.
+
+### Models on another machine
+
+Check what pi can reach with `pi --list-models`. An unlisted id is still accepted with a "not found … using custom model id" warning and works if the provider serves it. If the provider rejects pi's default API, add a custom entry in `~/.pi/agent/models.json`; this repo's live runs needed one for `claude-sonnet-5.5`:
+
 ```json
 { "providers": { "github-copilot": { "models": [
   { "id": "claude-sonnet-5.5", "api": "openai-completions", "baseUrl": "https://api.githubcopilot.com",
@@ -34,46 +139,48 @@ Agents are read from `agents/`. Optional `relay.config.json` maps tiers to model
     "headers": { "User-Agent": "GitHubCopilotChat/0.35.0", "Editor-Version": "vscode/1.107.0",
                  "Editor-Plugin-Version": "copilot-chat/0.35.0", "Copilot-Integration-Id": "vscode-chat" } } ] } } }
 ```
-Authenticate first (`pi` then `/login`, GitHub Copilot). The orchestrator model is chosen with `--model` (the live driver's second argument); specialists use the tier mapping. Models and headers above are what worked here, not a guarantee elsewhere. Never commit tokens.
 
-## Live driver
-`node scripts/live-run.mjs <repo> <provider/model> "<requirement>" [--log f] [--nudges N] [--simulate-approvals]` runs the orchestrator in pi RPC mode. Approvals (`relay_approval`) are asked of a human on stdin (`Approve? [y/N]`); with no TTY they are denied. `--simulate-approvals` auto-approves and logs each as `[SIMULATED APPROVAL]`; use it only for unattended tests.
+Authenticate first (`pi`, then `/login`). This is what worked here, not a guarantee elsewhere. Never commit tokens.
 
-## Enforcement
-Every feature runs in its own git worktree by default (branch `relay/<slug>`, dir `<repo>.relay-worktrees/<slug>`), with `.ai/<slug>/` inside it so artefacts are committed with the feature; `harness_state init worktree=false` runs in place, and `open` re-attaches on resume. Workers run as separate pi processes with only their tools; they get no orchestration tools, so they cannot spawn sub-agents. A `tool_call` guard blocks writes outside a role's allowed files (implementors: slice-owned globs), `state.json`, `AGENTS.md`/`README.md`, `.env`, `.git`; blocks `git push`; and limits `git commit` to implementors. Only `relay_approval` (user UI) can approve a gate; only the verifier's `relay_set_passes` can set `passes`, and only with existing evidence files.
+### Live driver
 
-## Copilot
-`node scripts/gen-copilot-agents.mjs` writes `.github/agents/*.agent.md`. The file format was checked against GitHub's custom-agent docs, but relay-specific tools have no Copilot equivalent yet, so the harness/orchestrator do not run there. Partial and untested.
+```bash
+node scripts/live-run.mjs <repo> <provider/model> "<requirement>" [--log f] [--nudges N] [--simulate-approvals]
+```
 
-## Checks
-`npm run check`
+Runs the orchestrator in pi RPC mode. Approvals are asked on stdin (`Approve? [y/N]`; denied with no TTY). `--simulate-approvals` auto-approves and logs `[SIMULATED APPROVAL]`; use it only for unattended tests.
 
-## Known limitations
-- Verified: schemas, lib logic, frontmatter lint, extension typechecks against pi 1.5.0 types. Not verified: a live end-to-end pi run (extension loading, real child agents).
-- The `bash` tool can still write anywhere while an agent runs; after every agent run the harness diffs against the pre-run HEAD and reverts (and reports) out-of-ownership changes, including committed ones. Reads of ignored/untracked paths are not policed.
-- Parallel implementors each get their own worktree (`<slug>--<slice>`, branch `relay/<slug>--<slice>`), merged back `--no-ff` in plan order after the batch; conflicts abort that merge, mark the slice `failed` and keep its branch/worktree for sequential re-delegation. Slice worktrees get a `node_modules` junction to the feature worktree's (if present; removed before slice cleanup).
-- Files in `.ai/<slug>/` outside the allowed layout (see `lib/policy.mjs` `isLayoutFile`) are moved to `.ai/<slug>/_quarantine/` after each delegation. The PR phase is `pr_draft` (writes `pr.md`) then `finalize` (secret scan, commit `.ai/<slug>/`, state done); no push, no PR.
-- Holdout scenarios (StrongDM-style hidden e2e tests): the spec-writer writes `.ai/<slug>/holdout/scenarios.json`; only the verifier reads it and writes `holdout/results.json` + `holdout/evidence/**`. Read guards block every other role (including bash/grep/find/ls commands mentioning `holdout`), the dir is git-excluded and never committed, and slice worktrees branch from committed state. The harness computes the satisfaction score (credible passes / total); `satisfactionThreshold` in `relay.config.json` (default 1) is the minimum to enter review; the score appears in `pr.md`. Visible `passes` stays the authoritative gate. `lib/speclint.mjs` warns about vague or unobservable features.json scenarios at spec-approval. Limits: the bash guard is text-based and can be obfuscated around; holdouts are not live-tested in pi yet.
-- `set_phase` also validates content (schemas, approvals recorded, slices merged, verifier evidence for every passing scenario, review report) via `lib/gates.mjs`.
+## Repo layout
 
-## Required checks
+| Path | Purpose |
+|---|---|
+| `skills/relay/` | Orchestrator skill; `references/` has brief, workflow, resume, scenario and digital-twin guidance |
+| `agents/` | The agent definitions above |
+| `extensions/harness/` | pi extension: `relay_subagent` (single/parallel/chain isolated pi processes), `harness_state`, `relay_approval`, `relay_checks`, `relay_secret_scan`, guards |
+| `lib/` | Dependency-free ESM logic shared by the extension and tests (state, gates, policy, gitflow, holdout, fanout, budget, lint) |
+| `schemas/` | JSON Schemas: state, features, plan, verifier report, review lens |
+| `templates/` | brief, spec, design, lessons |
+| `scripts/` | `validate.mjs`, `live-run.mjs`, `gen-copilot-agents.mjs` |
+| `docs/copilot-port.md` | Copilot port plan and concept mapping |
 
-`relay.config.json` `requiredChecks` (default `["test"]`; add `lint`, `sast`) lists checks that must be configured via `harness_state action=checks`, run through `relay_checks` and be green on the current HEAD, otherwise `set_phase review`/`pr`/`done` is refused. Results are stored in `state.checkResults`.
+## Tests
 
-## Budget
+```bash
+npm run check   # validate (frontmatter + schemas) + node --test test/ + typecheck
+```
 
-`relay.config.json` `budget` (`maxSubagentCalls`, `maxTokens`) caps a run. Every `relay_subagent` call records calls/turns/tokens (from pi's assistant-message usage) in `state.usage` (also per agent). When a cap is hit, `relay_subagent` refuses and the orchestrator must stop and report. Token counts are only as accurate as the provider's reported usage (unverified live).
+## Status and known limitations
 
+Relay has been run live end to end in pi several times against a small sample Node API, with Sonnet 5.5 as orchestrator and GPT-6.1 Sol as specialists. The latest two runs reached `done` with no nudges. Honest scope of that evidence:
 
-
-## Autonomy levels
-
-`relay.config.json` `"autonomy"`: `supervised` (spec, design and PR text need human approval), `gated` (default: spec and design), `autonomous` (no human approvals; `relay_approval` auto-approves and says so). Schema, check, holdout and review gates apply at every level. In autonomous runs the orchestrator re-delegates instead of asking the user.
-
-## Lessons from verifier failures
-
-Failing holdout symptoms are recorded in `.ai/spec-lessons.json` on `set_phase` and fed back into spec-lint (`lib/speclessons.mjs`): scenarios overlapping 2+ keywords with a past failure get a lint warning. Template: `skills/relay/references/scenario-template.md`.
+- **Live-verified:** the full pipeline to a committed `pr.md`; parallel review lenses; a blocking review finding fixed and re-run on the affected lens; holdout scoring; the bash outside-worktree write block; the holdout read block for an implementor and a reviewer's `read` tool; token/call usage recording.
+- **Unit-tested only, or checked outside a model:** the ownership revert and test-gate retry through a real child agent; the obfuscated holdout-read variants; the 2-round lens cap refusal; budget caps; autonomy levels; required `sast`/`lint` checks; the Windows `node_modules` junction; spec lessons; the digital-twin design gate.
+- **Not exercised in every run:** parallel researcher lanes and parallel slices depend on the orchestrator and architect's choices; the latest run used one researcher and sequential slices.
+- Approvals in the live runs were **simulated** with `--simulate-approvals`.
+- The bash write guards and holdout read guard are **text/pattern based** and can be obfuscated around (for example `python -c "open('../x','w')"`). The ownership revert is the backstop for in-repo writes.
+- Reads of ignored or untracked paths are not policed.
+- Tested on one small sample repo and one platform (Windows); results elsewhere are unknown.
 
 ## Copilot port
 
-Plan and concept mapping (no code yet): `docs/copilot-port.md`.
+Not implemented. `node scripts/gen-copilot-agents.mjs` writes `.github/agents/*.agent.md`, but Relay's harness tools have no Copilot equivalent yet, so the orchestrator and guards do not run there. The plan and concept mapping are in [`docs/copilot-port.md`](docs/copilot-port.md).
