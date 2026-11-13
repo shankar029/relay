@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Relay holdout results (holdout/results.json); written only by the verifier",
+  "type": "object",
+  "required": ["results"],
+  "additionalProperties": false,
+  "properties": {
+    "results": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["scenario", "result", "evidence"],
+        "additionalProperties": false,
+        "properties": {
+          "scenario": { "type": "string" },
+          "result": { "enum": ["pass", "fail", "blocked"] },
+          "evidence": { "type": "array", "items": { "type": "string" } },
+          "symptom": { "type": "string", "description": "One-line observed failure, safe to relay to implementors (no steps, no scenario text)" }
+        }
+      }
+    }
+  }
+}

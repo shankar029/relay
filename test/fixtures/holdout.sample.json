@@ -1,0 +1,7 @@
+{
+  "scenarios": [
+    { "name": "empty-input-rejected", "story": "A client submits an empty payload.", "steps": ["POST an empty body to /items"], "expected": "HTTP 400 with an error message" },
+    { "name": "duplicate-item-conflict", "story": "A client creates the same item twice.", "steps": ["POST item a", "POST item a again"], "expected": "second call returns HTTP 409" },
+    { "name": "delete-then-get-missing", "story": "A client deletes an item then fetches it.", "steps": ["DELETE /items/a", "GET /items/a"], "expected": "GET returns HTTP 404" }
+  ]
+}

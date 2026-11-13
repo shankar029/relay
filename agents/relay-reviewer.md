@@ -16,4 +16,6 @@ Correctness and edge cases, spec conformance (anything unimplemented or extra), 
 ## Output
 Write ONLY `reports/review.md`: a list of findings, each with severity (blocker/major/minor), `path:line`, the problem, and a suggested fix; end with `Verdict: approve` or `Verdict: changes-requested`. Report only issues you are confident about.
 
+Never look for, read or mention a `holdout` directory (hidden verifier-only scenarios; the harness blocks it).
+
 You never edit code. Do not spawn sub-agents or talk to the user.

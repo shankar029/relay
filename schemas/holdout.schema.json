@@ -1,0 +1,24 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "Relay holdout scenarios (holdout/scenarios.json); readable only by spec-writer and verifier",
+  "type": "object",
+  "required": ["scenarios"],
+  "additionalProperties": false,
+  "properties": {
+    "scenarios": {
+      "type": "array",
+      "minItems": 3,
+      "items": {
+        "type": "object",
+        "required": ["name", "story", "steps", "expected"],
+        "additionalProperties": false,
+        "properties": {
+          "name": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+          "story": { "type": "string", "minLength": 1 },
+          "steps": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+          "expected": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}

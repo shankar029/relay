@@ -51,6 +51,8 @@ check("features sample", "features", fixture("features.sample.json"));
 check("plan sample", "plan", fixture("plan.sample.json"));
 checkPlan(fixture("plan.sample.json")).forEach((e) => err(`plan sample: ${e}`));
 check("verifier-report sample", "verifier-report", fixture("verifier-report.sample.json"));
+check("holdout sample", "holdout", fixture("holdout.sample.json"));
+check("holdout-results sample", "holdout-results", fixture("holdout-results.sample.json"));
 
 if (errors.length) {
   console.error(errors.map((e) => `FAIL ${e}`).join("\n"));

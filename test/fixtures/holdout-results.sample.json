@@ -1,0 +1,7 @@
+{
+  "results": [
+    { "scenario": "empty-input-rejected", "result": "pass", "evidence": ["holdout/evidence/empty-input-rejected.txt"] },
+    { "scenario": "duplicate-item-conflict", "result": "fail", "evidence": ["holdout/evidence/duplicate-item-conflict.txt"], "symptom": "second create returns 201" },
+    { "scenario": "delete-then-get-missing", "result": "pass", "evidence": ["holdout/evidence/delete-then-get-missing.txt"] }
+  ]
+}

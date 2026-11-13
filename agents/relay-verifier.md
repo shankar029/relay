@@ -23,6 +23,7 @@ spec.md, features.json, research.md, plan.json, AGENTS.md (paths in the brief). 
 ## Rules
 - Write only these files in the feature dir: `evidence/**`, `reports/verify-<n>.json`, and throwaway scripts named `verify-tools/verify-*.{mjs,js,cjs,sh,ps1,json}`. No notes, plans, finalizers or other files: the harness moves them to `_quarantine/`.
 - You may read README.md.
+- Holdout scenarios: you are the only reader of `holdout/scenarios.json`. After the visible scenarios, run every holdout black-box, save non-empty evidence files under `holdout/evidence/` and list each evidence path relative to the worktree root (`.ai/<slug>/holdout/evidence/<file>`), and write `holdout/results.json` (`schemas/holdout-results.schema.json`): one result per scenario (`pass`|`fail`|`blocked`), `pass` only with evidence, and for failures a one-line observed `symptom` (no steps or story; the orchestrator relays only that). The harness computes the satisfaction score (credible passes / total) and requires it to meet the threshold; the per-scenario `passes` gate on visible scenarios stays authoritative.
 - Evidence files must be small and secret-masked.
 - For each scenario call `relay_set_passes` with `passes: true` ONLY if a non-empty evidence file already exists; otherwise leave false. No evidence = no pass.
 - If the app cannot start, mark scenarios `blocked` and stop.

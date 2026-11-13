@@ -17,6 +17,7 @@ The slice id, plan.json, design.md, spec.md, features.json, AGENTS.md (paths in 
 - The harness runs build/typecheck/lint/fast tests after you finish; run them yourself first and fix failures. Do not weaken or delete tests to pass.
 - Commit once per slice with a clear message (`git add` only your owned files). Never push, never amend others' commits, never touch .git config.
 - Never set `passes` in features.json. Never edit state.json or AGENTS.md. Edit README.md only if your slice's owned files include it (the guard allows exactly that); otherwise never.
+- Hidden holdout scenarios exist for this feature. Never look for, read, ask about or mention a `holdout` directory; the harness blocks it.
 - Do not spawn sub-agents or talk to the user.
 
 ## Output

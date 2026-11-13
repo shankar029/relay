@@ -21,6 +21,8 @@ import { ensureWorktree, findWorktree, excludeHarnessFiles, branchFor, repoTop }
 // @ts-ignore
 import { phaseProblems, renderPr } from "../../lib/gates.mjs";
 // @ts-ignore
+import { holdoutAccessProblem, holdoutResultProblems } from "../../lib/holdout.mjs";
+// @ts-ignore
 import { enforceOwnership, quarantineStrays, commitArtefacts, addSliceWorktree, commitSliceLeftovers, mergeSlices, removeSliceWorktree, changedSince } from "../../lib/gitflow.mjs";
 const S: any = S_;
 import { RELAY_HOME, loadAgents, runAgent, mapLimit } from "./run.ts";
@@ -38,6 +40,15 @@ const readJson = (f: string) => JSON.parse(fs.readFileSync(f, "utf8"));
 const schema = (n: string) => readJson(path.join(RELAY_HOME, "schemas", `${n}.schema.json`));
 const text = (t: string, details: unknown = {}) => ({ content: [{ type: "text" as const, text: t }], details });
 const posix = (p: string) => p.split(path.sep).join("/");
+const gateSchemas = () => ({ features: schema("features"), plan: schema("plan"), holdout: schema("holdout"), holdoutResults: schema("holdout-results") });
+// relay.config.json "satisfactionThreshold" (0..1): minimum holdout pass fraction to enter review. Default 1 (all must pass).
+const satThreshold = (cwd: string): number => {
+  for (const base of [cwd, RELAY_HOME]) {
+    const f = path.join(base, "relay.config.json");
+    if (fs.existsSync(f)) { try { const v = readJson(f).satisfactionThreshold; return typeof v === "number" ? v : 1; } catch { return 1; } }
+  }
+  return 1;
+};
 
 const IS_CHILD = process.env.RELAY_CHILD === "1";
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -72,6 +83,10 @@ export default function (pi: ExtensionAPI) {
     }
     if (event.toolName === "read") {
       const why = (checkRead as any)({ role, rel: posix(String(input.path || "")) });
+      if (why) return { block: true, reason: `relay guard: ${why}` };
+    }
+    if (["bash", "grep", "find", "ls"].includes(event.toolName)) {
+      const why = (holdoutAccessProblem as any)(role, JSON.stringify(input));
       if (why) return { block: true, reason: `relay guard: ${why}` };
     }
     if (event.toolName === "bash") {
@@ -236,14 +251,14 @@ export default function (pi: ExtensionAPI) {
               {
                 const miss = phaseRequires(p.phase, featureDir()).filter((f: string) => !fs.existsSync(path.join(cwd, f)));
                 if (miss.length) throw new Error(`cannot enter ${p.phase}: missing ${miss.join(", ")}. Re-run the producing worker.`);
-                const probs = (phaseProblems as any)({ phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: { features: schema("features"), plan: schema("plan") } });
+                const probs = (phaseProblems as any)({ phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd) });
                 if (probs.length) throw new Error(`cannot enter ${p.phase}:\n- ${probs.join("\n- ")}`);
               }
               st.phase = p.phase; return `phase=${p.phase}`;
             case "pr_draft": {
               if (!p.text) throw new Error("text (PR summary) required; caveats go in 'caveats'");
               const fe = readJson(path.join(cwd, featureDir(), "features.json"));
-              const probs = (phaseProblems as any)({ phase: "pr", cwd, featureDir: featureDir(), state: st, schemas: { features: schema("features"), plan: schema("plan") } });
+              const probs = (phaseProblems as any)({ phase: "pr", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd) });
               if (probs.length) throw new Error(`cannot draft PR:\n- ${probs.join("\n- ")}`);
               const ev = path.join(cwd, featureDir(), "evidence");
               const checkLogs = fs.existsSync(ev) ? fs.readdirSync(ev).filter((n) => /^checks-.*\.log$/.test(n)).sort() : [];
@@ -257,13 +272,15 @@ export default function (pi: ExtensionAPI) {
               try { commits = git(cwd, "log", "--oneline", `${base}..HEAD`).split("\n").filter(Boolean); diffStat = git(cwd, "diff", "--stat", `${base}...HEAD`); } catch { /* base unknown */ }
               const rv = fs.readFileSync(path.join(cwd, featureDir(), "reports", "review.md"), "utf8");
               const reports = fs.readdirSync(path.join(cwd, featureDir(), "reports")).filter((n) => /^verify-.*\.json$/.test(n)).map((n) => `${featureDir()}/reports/${n}`);
-              const md = (renderPr as any)({ slug, title: p.name || slug, summary: p.text, caveats: p.symptom ? String(p.symptom).split("\n").filter(Boolean) : [], features: fe, featureDir: featureDir(), branch, base, checks, commits, diffStat, reviewExcerpt: rv.slice(0, 1500), verifyReports: reports });
+              let sat: any = null;
+              try { sat = (holdoutResultProblems as any)(cwd, featureDir(), gateSchemas(), 0).sat; } catch { /* no holdouts */ }
+              const md = (renderPr as any)({ satisfaction: sat, slug, title: p.name || slug, summary: p.text, caveats: p.symptom ? String(p.symptom).split("\n").filter(Boolean) : [], features: fe, featureDir: featureDir(), branch, base, checks, commits, diffStat, reviewExcerpt: rv.slice(0, 1500), verifyReports: reports });
               S.writeFileAtomic(path.join(cwd, featureDir(), "pr.md"), md);
               return `pr.md written (${md.length} chars). Next: harness_state action=finalize`;
             }
             case "finalize": {
               if (st.phase !== "pr") throw new Error(`finalize requires phase=pr (now ${st.phase})`);
-              const probs = (phaseProblems as any)({ phase: "done", cwd, featureDir: featureDir(), state: st, schemas: { features: schema("features"), plan: schema("plan") } });
+              const probs = (phaseProblems as any)({ phase: "done", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd) });
               if (probs.length) throw new Error(`cannot finalize:\n- ${probs.join("\n- ")}`);
               st.phase = "done";
               return "__finalize__";
@@ -460,6 +477,8 @@ export default function (pi: ExtensionAPI) {
           `## Inputs (read in full)\n${b.inputs.map((f: string) => `- ${f}`).join("\n")}`,
           `## Lessons for your role\n${lessons.map((l: any) => `- ${l.symptom} => ${l.rule}`).join("\n") || "(none)"}`,
           required.length ? `## Required output files (authoritative; override any other file names above)\nWrite exactly these files with the write tool, relative to the working directory:\n${required.map((f) => `- ${f}`).join("\n")}\nThe task is not done until each exists on disk.` : "",
+          t.agent === "relay-spec-writer" ? `## holdout/scenarios.json (hidden from implementors and reviewer; only the verifier will read it) must validate against this JSON Schema: at least 3 end-to-end behavioural user stories that are DIFFERENT from the visible features.json scenarios (cover edge cases, error paths and cross-feature flows; do not restate visible scenarios)\n\`\`\`json\n${JSON.stringify(schema("holdout"))}\n\`\`\`` : "",
+          t.agent === "relay-verifier" ? `## holdout/results.json: after running every scenario in holdout/scenarios.json black-box, write holdout/results.json (schema below) with one result per scenario; pass requires non-empty evidence files; list each evidence path in 'evidence' relative to the repo/worktree root, i.e. ${featureDir()}/holdout/evidence/<file>. On failure set 'symptom' to a one-line observed behaviour (no steps; the orchestrator relays it to implementors).\n\`\`\`json\n${JSON.stringify(schema("holdout-results"))}\n\`\`\`` : "",
           t.agent === "relay-architect" ? `## plan.json must validate against this JSON Schema exactly (no extra properties; slice ids kebab-case; contracts are objects {name,pinned,location}; slice.contracts are strings; slices need dependsOn; every slice that changes code lists its test file(s) in slice.tests; slices in the SAME wave of order must have completely disjoint files.own (if two slices touch the same file, put them in separate waves, one slice per wave, in dependency order) and a wave with 2+ slices requires independence.parallelizable=true, otherwise use one slice per wave; top-level needs contracts, slices, order (array of arrays of slice ids), independence)\n\`\`\`json\n${JSON.stringify(schema("plan"))}\n\`\`\`` : "",
           `Feature dir: ${featureDir()}${t.slice ? `\nSlice: ${t.slice}` : ""}`,
         ].filter(Boolean).join("\n\n");

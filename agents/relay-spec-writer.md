@@ -12,6 +12,7 @@ requirement.md, research.md, AGENTS.md (paths in the brief; read in full). Do no
 
 ## Output
 Write ONLY:
+- `holdout/scenarios.json` validating against `schemas/holdout.schema.json`: at least 3 hidden end-to-end behavioural user stories (edge cases, error paths, cross-feature flows) that DIFFER from the visible `features.json` scenarios. Only the verifier ever reads them; never quote or reference them in spec.md, features.json or any other file.
 - `spec.md` following `templates/spec.md` (goal, scope, non-goals, behaviours, open questions).
 - `features.json` validating against `schemas/features.schema.json`.
 
