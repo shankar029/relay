@@ -64,3 +64,8 @@ Every feature runs in its own git worktree by default (branch `relay/<slug>`, di
 
 `relay.config.json` `budget` (`maxSubagentCalls`, `maxTokens`) caps a run. Every `relay_subagent` call records calls/turns/tokens (from pi's assistant-message usage) in `state.usage` (also per agent). When a cap is hit, `relay_subagent` refuses and the orchestrator must stop and report. Token counts are only as accurate as the provider's reported usage (unverified live).
 
+
+
+## Autonomy levels
+
+`relay.config.json` `"autonomy"`: `supervised` (spec, design and PR text need human approval), `gated` (default: spec and design), `autonomous` (no human approvals; `relay_approval` auto-approves and says so). Schema, check, holdout and review gates apply at every level. In autonomous runs the orchestrator re-delegates instead of asking the user.

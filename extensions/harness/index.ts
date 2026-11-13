@@ -23,6 +23,7 @@ import { phaseProblems, renderPr } from "../../lib/gates.mjs";
 // @ts-ignore
 import { holdoutAccessProblem, holdoutResultProblems } from "../../lib/holdout.mjs";
 // @ts-ignore
+import { autonomyLevel, requiredApprovals } from "../../lib/autonomy.mjs";
 import { addUsage, budgetProblem } from "../../lib/budget.mjs";
 import { laneProblem, reviewLenses, mergeResearch, consolidateReview, reviewRerun, reviewChangedFiles, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
 // @ts-ignore
@@ -67,6 +68,14 @@ const budgetOf = (cwd: string): any => {
   for (const base of [cwd, RELAY_HOME]) {
     const f = path.join(base, "relay.config.json");
     if (fs.existsSync(f)) { try { return readJson(f).budget || {}; } catch { return {}; } }
+  }
+  return {};
+};
+
+const configOf = (cwd: string): any => {
+  for (const base of [cwd, RELAY_HOME]) {
+    const f = path.join(base, "relay.config.json");
+    if (fs.existsSync(f)) { try { return readJson(f); } catch { return {}; } }
   }
   return {};
 };
@@ -290,14 +299,14 @@ export default function (pi: ExtensionAPI) {
               {
                 const miss = phaseRequires(p.phase, featureDir()).filter((f: string) => !fs.existsSync(path.join(cwd, f)));
                 if (miss.length) throw new Error(`cannot enter ${p.phase}: missing ${miss.join(", ")}. Re-run the producing worker.`);
-                const probs = (phaseProblems as any)({ phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredChecks: requiredChecks(cwd), head: headOf(cwd) });
+                const probs = (phaseProblems as any)({ phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: requiredChecks(cwd), head: headOf(cwd) });
                 if (probs.length) throw new Error(`cannot enter ${p.phase}:\n- ${probs.join("\n- ")}`);
               }
               st.phase = p.phase; return `phase=${p.phase}`;
             case "pr_draft": {
               if (!p.text) throw new Error("text (PR summary) required; caveats go in 'caveats'");
               const fe = readJson(path.join(cwd, featureDir(), "features.json"));
-              const probs = (phaseProblems as any)({ phase: "pr", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredChecks: requiredChecks(cwd), head: null });
+              const probs = (phaseProblems as any)({ phase: "pr", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: requiredChecks(cwd), head: null });
               if (probs.length) throw new Error(`cannot draft PR:\n- ${probs.join("\n- ")}`);
               const ev = path.join(cwd, featureDir(), "evidence");
               const checkLogs = fs.existsSync(ev) ? fs.readdirSync(ev).filter((n) => /^checks-.*\.log$/.test(n)).sort() : [];
@@ -319,7 +328,7 @@ export default function (pi: ExtensionAPI) {
             }
             case "finalize": {
               if (st.phase !== "pr") throw new Error(`finalize requires phase=pr (now ${st.phase})`);
-              const probs = (phaseProblems as any)({ phase: "done", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredChecks: requiredChecks(cwd), head: null });
+              const probs = (phaseProblems as any)({ phase: "done", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: requiredChecks(cwd), head: null });
               if (probs.length) throw new Error(`cannot finalize:\n- ${probs.join("\n- ")}`);
               st.phase = "done";
               return "__finalize__";
@@ -374,6 +383,10 @@ export default function (pi: ExtensionAPI) {
     parameters: Type.Object({ name: Type.String(), message: Type.String({ description: "what is being approved and where to read it" }) }),
     async execute(_id: string, p: any, _s: any, _u: any, ctx: any) {
       if (!slug) return text("error: no active feature");
+      if (autonomyLevel(configOf(rootOf(ctx))) === "autonomous") {
+        withState(rootOf(ctx), (st: any) => { st.approvals[p.name] = "approved"; });
+        return text(`${p.name}: AUTO-APPROVED (autonomy=autonomous; no human reviewed this). Proceed.`);
+      }
       if (!ctx.hasUI) return text("error: no interactive UI; ask the user in chat and wait");
       const ok = await ctx.ui.confirm(`Approve ${p.name}?`, p.message);
       withState(rootOf(ctx), (st: any) => { st.approvals[p.name] = ok ? "approved" : "rejected"; });

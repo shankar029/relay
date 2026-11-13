@@ -29,7 +29,7 @@ test("README is writable by implementors only (when owned)", () => {
   assert.ok(checkWrite({ role: "relay-implementor", rel: "AGENTS.md", featureDir: fd, owned: ["AGENTS.md"] }));
 });
 
-import { checkProblems } from "../lib/gates.mjs";
+import { checkProblems, phaseProblems } from "../lib/gates.mjs";
 test("checkProblems enforces required lint/sast/test: configured, run, green, not stale", () => {
   const req = ["lint", "sast", "test"];
   assert.equal(checkProblems({ checks: { test: "t" }, checkResults: { test: { ok: true, head: "a" } } }, req, "a").length, 2); // lint+sast not configured
@@ -41,4 +41,20 @@ test("checkProblems enforces required lint/sast/test: configured, run, green, no
   st.checkResults.test.head = "newhead"; st.checkResults.lint.head = st.checkResults.sast.head = "newhead";
   assert.deepEqual(checkProblems(st, req, "newhead"), []);
   assert.deepEqual(checkProblems({}, [], "x"), []);
+});
+
+import { autonomyLevel, requiredApprovals } from "../lib/autonomy.mjs";
+test("autonomy levels select required approvals; pr approval enforced when supervised", () => {
+  assert.equal(autonomyLevel({}), "gated");
+  assert.equal(autonomyLevel({ autonomy: "bogus" }), "gated");
+  assert.deepEqual(requiredApprovals({ autonomy: "supervised" }), ["spec", "design", "pr"]);
+  assert.deepEqual(requiredApprovals({ autonomy: "autonomous" }), []);
+});
+test("phaseProblems honours requiredApprovals", () => {
+  const base = { cwd: "/nonexistent", featureDir: ".ai/x", state: { approvals: {}, slices: {}, steps: {} }, schemas: {} };
+  const has = (o, re) => phaseProblems({ ...base, ...o }).some((p) => re.test(p));
+  assert.ok(has({ phase: "design" }, /spec has not been approved/));
+  assert.ok(!has({ phase: "design", requiredApprovals: [] }, /not been approved/));
+  assert.ok(!has({ phase: "done" }, /pr has not been approved/));
+  assert.ok(has({ phase: "done", requiredApprovals: ["pr"] }, /pr has not been approved/));
 });

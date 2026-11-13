@@ -1,5 +1,6 @@
 {
   "reviewLenses": ["correctness", "security", "tests", "performance"],
+  "autonomy": "gated",
   "requiredChecks": ["test"],
   "budget": { "maxSubagentCalls": 60 },
   "tiers": {
