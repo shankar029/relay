@@ -3,8 +3,9 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { execFileSync } from "node:child_process";
 import { checkRead, checkWrite, requiredOutputs, isLayoutFile } from "../lib/policy.mjs";
-import { laneProblem, reviewLenses, mergeResearch, researchProblems, consolidateReview, reviewProblems, reviewRerun } from "../lib/fanout.mjs";
+import { laneProblem, reviewLenses, mergeResearch, researchProblems, consolidateReview, reviewProblems, reviewRerun, reviewChangedFiles } from "../lib/fanout.mjs";
 
 const FD = ".ai/f";
 const schema = JSON.parse(fs.readFileSync(new URL("../schemas/review-lens.schema.json", import.meta.url), "utf8"));
@@ -110,4 +111,45 @@ test("reviewRerun caps multi-round blocking loop at 2 re-runs", () => {
   const third = reviewRerun(st, ["security"]);
   assert.equal(third.ok, false);
   assert.match(third.error, /cap exceeded.*escalate/);
+});
+
+test("mergeResearch preserves conflicting claims verbatim and the gate requires the conflicts section", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "relay-res-"));
+  try {
+    const fd = ".ai/f";
+    fs.mkdirSync(path.join(dir, fd), { recursive: true });
+    fs.writeFileSync(path.join(dir, fd, "research-data.md"), "# Data\nStore is in-memory (src/store.js:10).\n");
+    fs.writeFileSync(path.join(dir, fd, "research-api.md"), "# API\nStore is persisted to disk (src/server.js:42).\n");
+    assert.equal(mergeResearch(dir, fd, "").ok, false);
+    const r = mergeResearch(dir, fd, "CONFLICT: data says in-memory, api says persisted. GAP: no test for restart.");
+    assert.equal(r.ok, true);
+    const md = fs.readFileSync(path.join(dir, fd, "research.md"), "utf8");
+    assert.match(md, /in-memory \(src\/store\.js:10\)/);
+    assert.match(md, /persisted to disk \(src\/server\.js:42\)/);
+    assert.match(md, /CONFLICT: data says in-memory/);
+    assert.deepEqual(researchProblems(dir, fd), []);
+    fs.writeFileSync(path.join(dir, fd, "research.md"), md.replace("## Conflicts and gaps", "## Other"));
+    assert.ok(researchProblems(dir, fd).some((p) => /Conflicts and gaps/.test(p)));
+    fs.writeFileSync(path.join(dir, fd, "research-api.md"), "# API\nNo citations here.\n");
+    assert.equal(mergeResearch(dir, fd, "x").ok, false);
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test("reviewChangedFiles diffs against the merge-base, not the moved base tip", () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "relay-rv-"));
+  const g = (...a) => execFileSync("git", a, { cwd: dir, encoding: "utf8" });
+  try {
+    g("init", "-q", "-b", "main"); g("config", "user.email", "a@b.c"); g("config", "user.name", "t");
+    fs.writeFileSync(path.join(dir, "a.js"), "1"); g("add", "."); g("commit", "-qm", "base");
+    g("checkout", "-qb", "feat");
+    fs.writeFileSync(path.join(dir, "page.html"), "<p>"); g("add", "."); g("commit", "-qm", "feat");
+    g("checkout", "-q", "main");
+    fs.writeFileSync(path.join(dir, "later.js"), "2"); g("add", "."); g("commit", "-qm", "main moved");
+    g("checkout", "-q", "feat");
+    assert.deepEqual(reviewChangedFiles(dir, "main", "zzz"), ["page.html"]);
+    assert.deepEqual(reviewChangedFiles(dir, "HEAD", "main"), ["page.html"]);
+    assert.deepEqual(reviewChangedFiles(dir, undefined, "main"), ["page.html"]);
+    assert.deepEqual(reviewChangedFiles(dir, "no-such-branch", "main"), []);
+    assert.ok(reviewLenses({}, reviewChangedFiles(dir, "main", "main")).includes("accessibility"));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

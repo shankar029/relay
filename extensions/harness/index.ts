@@ -23,7 +23,7 @@ import { phaseProblems, renderPr } from "../../lib/gates.mjs";
 // @ts-ignore
 import { holdoutAccessProblem, holdoutResultProblems } from "../../lib/holdout.mjs";
 // @ts-ignore
-import { laneProblem, reviewLenses, mergeResearch, consolidateReview, reviewRerun, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
+import { laneProblem, reviewLenses, mergeResearch, consolidateReview, reviewRerun, reviewChangedFiles, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
 // @ts-ignore
 import { enforceOwnership, quarantineStrays, commitArtefacts, addSliceWorktree, commitSliceLeftovers, mergeSlices, removeSliceWorktree, changedSince } from "../../lib/gitflow.mjs";
 const S: any = S_;
@@ -238,9 +238,7 @@ export default function (pi: ExtensionAPI) {
           let cfg: any = {};
           for (const b of [cwd, RELAY_HOME]) { const f = path.join(b, "relay.config.json"); if (fs.existsSync(f)) { try { cfg = readJson(f); } catch { /* ignore */ } break; } }
           const st0 = readJson(stateFile(cwd));
-          const base = st0.worktree?.base && st0.worktree.base !== "HEAD" ? st0.worktree.base : defaultBranch(cwd);
-          let changed: string[] = [];
-          try { changed = git(cwd, "diff", "--name-only", `${base}...HEAD`).split("\n").filter(Boolean); } catch { /* no diff */ }
+          const changed = (reviewChangedFiles as any)(cwd, st0.worktree?.base, defaultBranch(cwd));
           return text(JSON.stringify({ lenses: (reviewLenses as any)(cfg, changed), maxRounds: 2 }));
         }
         if (p.action === "consolidate_review") {
