@@ -52,3 +52,5 @@ Lessons: when the same failure occurs twice, add one `harness_state lesson_add` 
 - `references/workflow.md`: per-phase inputs, outputs and gates.
 
 Autonomy: read relay.config.json autonomy. At autonomous, relay_approval auto-approves; never ask the user, re-delegate instead. At supervised, also get relay_approval pr before done.
+
+Spec: follow references/scenario-template.md. spec-lint also warns on scenarios resembling past verifier failures (.ai/spec-lessons.json, recorded automatically from holdout results); fix them before spec approval.

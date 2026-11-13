@@ -58,3 +58,17 @@ test("phaseProblems honours requiredApprovals", () => {
   assert.ok(!has({ phase: "done" }, /pr has not been approved/));
   assert.ok(has({ phase: "done", requiredApprovals: ["pr"] }, /pr has not been approved/));
 });
+import { recordLessons, loadLessons, lessonWarnings } from "../lib/speclessons.mjs";
+import fs from "node:fs"; import os from "node:os"; import path from "node:path";
+test("verifier failures become lessons that flag similar future scenarios", () => {
+  const cwd = fs.mkdtempSync(path.join(os.tmpdir(), "les-"));
+  const res = { results: [{ scenario: "s1", result: "fail", evidence: [], symptom: "archived todos still appear in the default list" }, { scenario: "s2", result: "pass", evidence: ["e"] }] };
+  assert.equal(recordLessons(cwd, res), true);
+  assert.equal(recordLessons(cwd, res), false);
+  const lessons = loadLessons(cwd);
+  assert.equal(lessons.length, 1);
+  const fe = { items: [{ name: "archive", scenarios: [{ name: "list", steps: ["GET /todos returns archived todos in the list"] }, { name: "other", steps: ["GET /health returns 200"] }] }] };
+  const w = lessonWarnings(fe, lessons);
+  assert.equal(w.length, 1);
+  assert.match(w[0], /archive\/list/);
+});

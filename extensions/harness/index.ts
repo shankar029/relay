@@ -23,6 +23,7 @@ import { phaseProblems, renderPr } from "../../lib/gates.mjs";
 // @ts-ignore
 import { holdoutAccessProblem, holdoutResultProblems } from "../../lib/holdout.mjs";
 // @ts-ignore
+import { loadLessons, recordLessons } from "../../lib/speclessons.mjs";
 import { autonomyLevel, requiredApprovals } from "../../lib/autonomy.mjs";
 import { addUsage, budgetProblem } from "../../lib/budget.mjs";
 import { laneProblem, reviewLenses, mergeResearch, consolidateReview, reviewRerun, reviewChangedFiles, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
@@ -299,7 +300,8 @@ export default function (pi: ExtensionAPI) {
               {
                 const miss = phaseRequires(p.phase, featureDir()).filter((f: string) => !fs.existsSync(path.join(cwd, f)));
                 if (miss.length) throw new Error(`cannot enter ${p.phase}: missing ${miss.join(", ")}. Re-run the producing worker.`);
-                const probs = (phaseProblems as any)({ phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: requiredChecks(cwd), head: headOf(cwd) });
+                try { (recordLessons as any)(cwd, readJson(path.join(cwd, featureDir(), "holdout", "results.json"))); } catch { /* no results yet */ }
+                const probs = (phaseProblems as any)({ lessons: (loadLessons as any)(cwd), phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: requiredChecks(cwd), head: headOf(cwd) });
                 if (probs.length) throw new Error(`cannot enter ${p.phase}:\n- ${probs.join("\n- ")}`);
               }
               st.phase = p.phase; return `phase=${p.phase}`;

@@ -69,3 +69,7 @@ Every feature runs in its own git worktree by default (branch `relay/<slug>`, di
 ## Autonomy levels
 
 `relay.config.json` `"autonomy"`: `supervised` (spec, design and PR text need human approval), `gated` (default: spec and design), `autonomous` (no human approvals; `relay_approval` auto-approves and says so). Schema, check, holdout and review gates apply at every level. In autonomous runs the orchestrator re-delegates instead of asking the user.
+
+## Lessons from verifier failures
+
+Failing holdout symptoms are recorded in `.ai/spec-lessons.json` on `set_phase` and fed back into spec-lint (`lib/speclessons.mjs`): scenarios overlapping 2+ keywords with a past failure get a lint warning. Template: `skills/relay/references/scenario-template.md`.
