@@ -3,6 +3,12 @@
   "autonomy": "gated",
   "requiredChecks": ["test"],
   "budget": { "maxSubagentCalls": 60 },
+  "copilotOrchestrator": "claude-sonnet-5.5",
+  "copilotTiers": {
+    "strong": "gpt-6.1-sol",
+    "mid": "gpt-6.1-sol",
+    "cheap": "gpt-6.1-sol"
+  },
   "tiers": {
     "strong": "github-copilot/gpt-6.1-sol",
     "mid": "github-copilot/gpt-6.1-sol",

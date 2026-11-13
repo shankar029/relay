@@ -428,4 +428,35 @@ Relay has been run live in pi several times against small sample Node APIs, with
 
 ## Copilot port
 
-Not implemented. `node scripts/gen-copilot-agents.mjs` writes `.github/agents/*.agent.md`, but Relay's harness tools have no Copilot equivalent yet, so the orchestrator and guards do not run there. The plan and concept mapping are in [`docs/copilot-port.md`](docs/copilot-port.md).
+Relay can be installed into GitHub Copilot (CLI and VS Code agent mode). It is a weaker host than pi: the orchestrator follows Relay's rules by instruction, and only a `preToolUse` hook enforces anything.
+
+### Install
+
+```
+npm run install:copilot -- --target repo --dry-run    # preview, writes nothing
+npm run install:copilot -- --target repo              # into <cwd>/.github (agents, skills/relay, hooks, relay runtime)
+npm run install:copilot -- --target home              # into ~/.copilot (or $COPILOT_HOME)
+npm run install:copilot -- --target plugin --dest dist/copilot-plugin   # plugin.json package, then: copilot plugin install <dir>
+```
+
+Options: `--dest <dir>`, `--no-guard` (skip the hook). Then start with `copilot --agent relay`.
+
+Tiers map to models through `copilotTiers` and `copilotOrchestrator` in `relay.config.json` (default: orchestrator `claude-sonnet-5.5`, specialists `gpt-6.1-sol`). Your Copilot plan or admin may override `model:`.
+
+### Enforcement: pi vs Copilot
+
+| Rule | pi | Copilot |
+|---|---|---|
+| Holdout/read/write guards | extension | hook, **subagents only** (root session has no `agentType`; set `RELAY_ROLE=relay` to guard it) |
+| bash path confinement, `git push`/non-implementor commit block | extension | hook |
+| Per-slice ownership revert | extension | instruction only (hook cannot see slice globs) |
+| Test gate, phase gates, budget, review round cap, autonomy | extension (`relay_*` tools) | instruction only; state.json edited by hand |
+| Workers as separate processes, parallel slice worktrees | yes | no; uses Copilot's `task`/`agent` subagents |
+
+Details: [`skills/relay/references/copilot-host.md`](skills/relay/references/copilot-host.md), [`docs/copilot-port.md`](docs/copilot-port.md).
+
+### Verified vs unverified
+
+Verified live with the `copilot` CLI: skills are discovered from `.github/skills`; agents from `.github/agents`; the `relay-reviewer`/`relay-implementor` agents run as subagents; the `preToolUse` hook fires with the expected payload and identifies subagent roles; `copilot plugin install` of the generated plugin succeeds (CLI reported "Installed 1 skill"; agent loading from the plugin was not confirmed). Verified by unit tests: translation, tier mapping, installer and dry-run, the installed hook denying a reviewer reading holdout, and the guard decision matrix.
+
+Unverified: an end-to-end Relay run on Copilot; hook denial live (in probes the model refused on its own, so no tool call reached the hook); the Sonnet orchestrator model (an admin setting forced `gpt-6.1-sol` here); VS Code agent mode; marketplace publishing (direct plugin installs are deprecated by Copilot).

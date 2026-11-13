@@ -1,4 +1,7 @@
-# Copilot port: plan and mapping (no code yet)
+# Copilot port: plan and mapping
+
+Status: a first install path exists (`npm run install:copilot`, see the README "Copilot port" section). Agents, skill and a `preToolUse` guard hook are generated; the harness tools (`relay_*`) are NOT ported, so state, gates, test gate, budget and ownership revert are instruction-only on Copilot. The MCP-server option in the table below remains the route to full parity and is not built. Original plan follows.
+
 
 Goal: run Relay under GitHub Copilot (CLI / app) in addition to pi, keeping `lib/*.mjs`, `schemas/`, `agents/*.md`, `skills/relay/` as the single source of truth. Only the thin host adapter (`extensions/harness/`) is pi-specific.
 
