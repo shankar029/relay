@@ -7,7 +7,7 @@ import { Type } from "typebox";
 // @ts-ignore plain ESM helpers (see lib/)
 import { validate } from "../../lib/jsonschema.mjs";
 // @ts-ignore
-import { checkWrite, checkRead, matchesAny, requiredOutputs, phaseRequires, testGate } from "../../lib/policy.mjs";
+import { checkWrite, bashConfinementProblem, checkRead, matchesAny, requiredOutputs, phaseRequires, testGate } from "../../lib/policy.mjs";
 // @ts-ignore
 import * as S_ from "../../lib/state.mjs";
 // @ts-ignore
@@ -122,6 +122,8 @@ export default function (pi: ExtensionAPI) {
     }
     if (event.toolName === "bash") {
       const cmd = String(input.command || "");
+      const esc = (bashConfinementProblem as any)(cmd, cwd);
+      if (esc) return { block: true, reason: `relay guard: bash write confinement: ${esc}` };
       if (/\bgit\s+push\b/.test(cmd)) return { block: true, reason: "relay guard: git push is not allowed" };
       if (/\bgit\s+commit\b/.test(cmd) && role !== "relay-implementor") {
         return { block: true, reason: `relay guard: ${role} may not commit` };
