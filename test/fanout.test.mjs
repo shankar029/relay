@@ -4,7 +4,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { checkRead, checkWrite, requiredOutputs, isLayoutFile } from "../lib/policy.mjs";
-import { laneProblem, reviewLenses, mergeResearch, researchProblems, consolidateReview, reviewProblems } from "../lib/fanout.mjs";
+import { laneProblem, reviewLenses, mergeResearch, researchProblems, consolidateReview, reviewProblems, reviewRerun } from "../lib/fanout.mjs";
 
 const FD = ".ai/f";
 const schema = JSON.parse(fs.readFileSync(new URL("../schemas/review-lens.schema.json", import.meta.url), "utf8"));
@@ -99,4 +99,15 @@ test("reviewProblems: unconsolidated and stale", () => {
   const future = new Date(Date.now() + 10000);
   fs.utimesSync(f, future, future);
   assert.ok(reviewProblems(d, FD).some((p) => /newer/.test(p)));
+});
+
+test("reviewRerun caps multi-round blocking loop at 2 re-runs", () => {
+  const st = { counters: {} };
+  assert.equal(reviewRerun(st, null).ok, true);
+  assert.equal(st.counters["review-rounds"], undefined);
+  assert.equal(reviewRerun(st, ["security"]).round, 1);
+  assert.equal(reviewRerun(st, ["security", "tests"]).round, 2);
+  const third = reviewRerun(st, ["security"]);
+  assert.equal(third.ok, false);
+  assert.match(third.error, /cap exceeded.*escalate/);
 });

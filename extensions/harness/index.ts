@@ -23,7 +23,7 @@ import { phaseProblems, renderPr } from "../../lib/gates.mjs";
 // @ts-ignore
 import { holdoutAccessProblem, holdoutResultProblems } from "../../lib/holdout.mjs";
 // @ts-ignore
-import { laneProblem, reviewLenses, mergeResearch, consolidateReview, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
+import { laneProblem, reviewLenses, mergeResearch, consolidateReview, reviewRerun, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
 // @ts-ignore
 import { enforceOwnership, quarantineStrays, commitArtefacts, addSliceWorktree, commitSliceLeftovers, mergeSlices, removeSliceWorktree, changedSince } from "../../lib/gitflow.mjs";
 const S: any = S_;
@@ -245,6 +245,8 @@ export default function (pi: ExtensionAPI) {
         }
         if (p.action === "consolidate_review") {
           const want = p.text ? String(p.text).split(",").map((s) => s.trim()).filter(Boolean) : null;
+          const gate: any = withState(cwd, (st: any) => (reviewRerun as any)(st, want));
+          if (!gate.ok) return text(`error: ${gate.error}`);
           const r = (consolidateReview as any)(cwd, featureDir(), schema("review-lens"), want);
           return text(r.ok ? JSON.stringify(r) : `error: ${r.error}`);
         }
