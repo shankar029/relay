@@ -25,6 +25,9 @@ pi -e ./extensions/harness/index.ts --skill ./skills/relay
 ```
 Agents are read from `agents/`. Optional `relay.config.json` maps tiers to models: `{"tiers":{"strong":"<model>","mid":"<model>","cheap":"<model>"}}` (looked up in the cwd, then the Relay repo).
 
+## Live driver
+`node scripts/live-run.mjs <repo> <provider/model> "<requirement>" [--log f] [--nudges N] [--simulate-approvals]` runs the orchestrator in pi RPC mode. Approvals (`relay_approval`) are asked of a human on stdin (`Approve? [y/N]`); with no TTY they are denied. `--simulate-approvals` auto-approves and logs each as `[SIMULATED APPROVAL]`; use it only for unattended tests.
+
 ## Enforcement
 Every feature runs in its own git worktree by default (branch `relay/<slug>`, dir `<repo>.relay-worktrees/<slug>`), with `.ai/<slug>/` inside it so artefacts are committed with the feature; `harness_state init worktree=false` runs in place, and `open` re-attaches on resume. Workers run as separate pi processes with only their tools; they get no orchestration tools, so they cannot spawn sub-agents. A `tool_call` guard blocks writes outside a role's allowed files (implementors: slice-owned globs), `state.json`, `AGENTS.md`/`README.md`, `.env`, `.git`; blocks `git push`; and limits `git commit` to implementors. Only `relay_approval` (user UI) can approve a gate; only the verifier's `relay_set_passes` can set `passes`, and only with existing evidence files.
 

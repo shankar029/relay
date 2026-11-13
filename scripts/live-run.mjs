@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 // Drives a real pi session (RPC mode) through the Relay skill and auto-answers
-// extension UI dialogs (relay_approval uses ctx.ui.confirm). SIMULATED approvals are
-// logged as such. Usage: node scripts/live-run.mjs <target-repo> <model> "<requirement>" [--log file]
+// extension UI dialogs (relay_approval uses ctx.ui.confirm). By default a human is asked
+// on stdin (denied if no TTY); pass --simulate-approvals to auto-approve (logged as SIMULATED).
+// Usage: node scripts/live-run.mjs <target-repo> <model> "<requirement>" [--log file] [--simulate-approvals]
 import { spawn, execSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
@@ -19,6 +20,9 @@ const log = fs.createWriteStream(logFile);
 const proc = spawn(process.execPath, [cli, "--mode", "rpc", "--no-session", "-e", path.join(home, "extensions/harness/index.ts"),
   "--skill", path.join(home, "skills/relay"), "--model", model], { cwd: repo, stdio: ["pipe", "pipe", "inherit"], env: process.env });
 
+// Real human approvals by default (prompt on stdin); simulation must be requested explicitly.
+const simulate = process.argv.includes("--simulate-approvals");
+const ask = readline.createInterface({ input: process.stdin, output: process.stdout });
 const startedAt = Date.now() - 2000;
 const send = (o) => proc.stdin.write(JSON.stringify(o) + "\n");
 let done;
@@ -29,8 +33,20 @@ readline.createInterface({ input: proc.stdout }).on("line", (l) => {
   let e; try { e = JSON.parse(l); } catch { return; }
   if (e.type === "extension_ui_request") {
     if (e.method === "confirm") {
-      console.log(`[SIMULATED APPROVAL] ${e.title}: ${String(e.message).slice(0, 120)}`);
-      send({ type: "extension_ui_response", id: e.id, confirmed: true });
+      if (simulate) {
+        console.log(`[SIMULATED APPROVAL] ${e.title}: ${String(e.message).slice(0, 120)}`);
+        send({ type: "extension_ui_response", id: e.id, confirmed: true });
+      } else if (!process.stdin.isTTY) {
+        console.log(`[APPROVAL DENIED: no TTY; use --simulate-approvals] ${e.title}`);
+        send({ type: "extension_ui_response", id: e.id, confirmed: false });
+      } else {
+        console.log(`\n[APPROVAL REQUIRED] ${e.title}\n${e.message}`);
+        ask.question("Approve? [y/N] ", (a) => {
+          const ok = /^y(es)?$/i.test(a.trim());
+          console.log(ok ? "[APPROVED by human]" : "[REJECTED by human]");
+          send({ type: "extension_ui_response", id: e.id, confirmed: ok });
+        });
+      }
     } else if (["select", "input", "editor"].includes(e.method)) {
       console.log(`[UI ${e.method}] cancelled: ${e.title}`);
       send({ type: "extension_ui_response", id: e.id, cancelled: true });
@@ -57,4 +73,5 @@ for (let n = 0; ; n++) {
   send({ type: "prompt", message: "Continue the Relay workflow autonomously from the current phase until the pr phase is complete. Do not ask me questions; I approve all approvals." });
 }
 proc.stdin.end();
+ask.close();
 setTimeout(() => proc.kill(), 2000);
