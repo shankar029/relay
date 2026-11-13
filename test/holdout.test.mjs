@@ -54,6 +54,8 @@ test("text guard blocks holdout mentions for non-allowed roles", () => {
   assert.ok(holdoutAccessProblem("relay-reviewer", "grep -r HOLDOUT ."));
   assert.equal(holdoutAccessProblem("relay-verifier", "cat holdout/scenarios.json"), null);
   assert.equal(holdoutAccessProblem("relay-implementor", "npm test"), null);
+  assert.equal(holdoutAccessProblem("relay", "cat > requirement.md <<EOF\na spec with holdout scenarios\nEOF"), null);
+  assert.ok(holdoutAccessProblem("relay", "cat .ai/x/holdout/scenarios.json"));
 });
 
 test("schemas validate fixtures and reject bad data", () => {
