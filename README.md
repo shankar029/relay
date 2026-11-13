@@ -73,3 +73,7 @@ Every feature runs in its own git worktree by default (branch `relay/<slug>`, di
 ## Lessons from verifier failures
 
 Failing holdout symptoms are recorded in `.ai/spec-lessons.json` on `set_phase` and fed back into spec-lint (`lib/speclessons.mjs`): scenarios overlapping 2+ keywords with a past failure get a lint warning. Template: `skills/relay/references/scenario-template.md`.
+
+## Copilot port
+
+Plan and concept mapping (no code yet): `docs/copilot-port.md`.
