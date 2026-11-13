@@ -1,9 +1,46 @@
 {
-  "name": "relay",
+  "name": "relay-harness",
   "version": "0.1.0",
-  "private": true,
   "type": "module",
   "description": "Relay: orchestrator + specialist-agent harness from requirement to PR",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi-skill",
+    "copilot",
+    "agents",
+    "orchestrator"
+  ],
+  "license": "UNLICENSED",
+  "pi": {
+    "extensions": [
+      "./extensions/harness/index.ts"
+    ],
+    "skills": [
+      "./skills"
+    ]
+  },
+  "bin": {
+    "relay-install-copilot": "scripts/install-copilot.mjs"
+  },
+  "files": [
+    "extensions/harness/index.ts",
+    "extensions/harness/run.ts",
+    "skills",
+    "agents",
+    "lib",
+    "scripts",
+    "schemas",
+    "templates",
+    "docs",
+    "relay.config.json",
+    "README.md"
+  ],
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "typebox": "*"
+  },
   "scripts": {
     "validate": "node scripts/validate.mjs",
     "install:copilot": "node scripts/install-copilot.mjs",

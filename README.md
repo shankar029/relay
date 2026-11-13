@@ -107,7 +107,7 @@ There is one path: run pi in the repo you want to change, with the Relay extensi
 
 ```bash
 cd /path/to/your/repo                       # a clean git repo with tests
-pi -e /path/to/relay/extensions/harness/index.ts --skill /path/to/relay/skills/relay
+pi        # if installed via `pi install`; from source: pi -e /path/to/relay/extensions/harness/index.ts --skill /path/to/relay/skills/relay
 ```
 
 Then, inside pi:
