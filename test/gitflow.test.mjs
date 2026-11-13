@@ -151,3 +151,14 @@ test("phaseProblems gates on content, approvals, merged slices and evidence", ()
     for (const h of ["Summary", "Traceability", "Verification", "Review", "Caveats", "gh pr create"]) assert.ok(pr.includes(h), h);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test("slice worktrees link node_modules; removing the slice leaves the shared dir intact", () => {
+  const { dir, repo } = mkRepo();
+  w(repo, "node_modules/dep/index.js", "d\n");
+  const s = addSliceWorktree(repo, "f", "s1");
+  assert.equal(fs.readFileSync(path.join(s.path, "node_modules/dep/index.js"), "utf8"), "d\n");
+  removeSliceWorktree(repo, "f", "s1", { deleteBranch: true });
+  assert.ok(!fs.existsSync(s.path));
+  assert.ok(fs.existsSync(path.join(repo, "node_modules/dep/index.js")));
+  fs.rmSync(dir, { recursive: true, force: true });
+});
