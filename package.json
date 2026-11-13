@@ -53,7 +53,7 @@
   "scripts": {
     "validate": "node scripts/validate.mjs",
     "install:copilot": "node scripts/install-copilot.mjs",
-    "test": "node --test test/",
+    "test": "node --test",
     "typecheck": "tsc -p extensions/harness/tsconfig.json --noEmit",
     "check": "npm run validate && npm test && npm run typecheck"
   },
