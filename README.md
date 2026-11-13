@@ -25,6 +25,17 @@ pi -e ./extensions/harness/index.ts --skill ./skills/relay
 ```
 Agents are read from `agents/`. Optional `relay.config.json` maps tiers to models: `{"tiers":{"strong":"<model>","mid":"<model>","cheap":"<model>"}}` (looked up in the cwd, then the Relay repo).
 
+### Model setup on another machine
+`relay.config.json` holds `provider/model-id` strings; the machine must be able to reach them. Check with `pi --list-models`. If a model is not listed (for example a newer GitHub Copilot model), pi still accepts the id with a "not found ... using custom model id" warning and it works when the provider serves it. If the provider rejects pi's default API, add a custom entry in `~/.pi/agent/models.json`, which this repo's live runs needed for `claude-sonnet-5.5`:
+```json
+{ "providers": { "github-copilot": { "models": [
+  { "id": "claude-sonnet-5.5", "api": "openai-completions", "baseUrl": "https://api.githubcopilot.com",
+    "reasoning": false, "input": ["text"], "contextWindow": 200000, "maxTokens": 32000,
+    "headers": { "User-Agent": "GitHubCopilotChat/0.35.0", "Editor-Version": "vscode/1.107.0",
+                 "Editor-Plugin-Version": "copilot-chat/0.35.0", "Copilot-Integration-Id": "vscode-chat" } } ] } } }
+```
+Authenticate first (`pi` then `/login`, GitHub Copilot). The orchestrator model is chosen with `--model` (the live driver's second argument); specialists use the tier mapping. Models and headers above are what worked here, not a guarantee elsewhere. Never commit tokens.
+
 ## Live driver
 `node scripts/live-run.mjs <repo> <provider/model> "<requirement>" [--log f] [--nudges N] [--simulate-approvals]` runs the orchestrator in pi RPC mode. Approvals (`relay_approval`) are asked of a human on stdin (`Approve? [y/N]`); with no TTY they are denied. `--simulate-approvals` auto-approves and logs each as `[SIMULATED APPROVAL]`; use it only for unattended tests.
 
