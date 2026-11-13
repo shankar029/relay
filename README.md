@@ -75,7 +75,7 @@ These are enforced by the extension in `extensions/harness/`, not by asking the 
 - **Ownership revert** – after every agent run the harness diffs against the pre-run HEAD and reverts (and reports) out-of-ownership changes, even ones made through `bash`.
 - **Bash path confinement** – heuristic block on bash writes outside the worktree.
 - **Holdouts** – hidden end-to-end scenarios only the verifier may read. Read guards block every other role, including bash commands that mention the directory. The verifier reports a **satisfaction score** (fraction passing); `satisfactionThreshold` (default 1) must be met to enter review. The hard `passes` gate stays authoritative.
-- **Test gate** – an implementor slice that changes code without touching tests fails and is retried with feedback.
+- **Test gate** – an implementor slice that changes code without touching tests fails and is retried with feedback. Implementors must map every spec item in their slice to a named test (integration/e2e for API, UI or cross-module slices) and report the mapping in `reports/impl-<slice>.md`; `plan.json` slices that list spec items but no `tests` are rejected at the design gate. The mapping report itself is instruction-only (not machine-checked).
 - **Only the user approves** – approvals go through `relay_approval` (a UI confirm). Only the verifier can set `passes`, and only with existing evidence.
 - **Content gates** – `set_phase` checks schemas, recorded approvals, merged slices, verifier evidence for each passing scenario and the review report, not just file existence.
 - **Required checks** – `requiredChecks` (default `["test"]`) must be green on the current HEAD before review/PR.

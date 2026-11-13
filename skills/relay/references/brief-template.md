@@ -25,4 +25,5 @@ Example (researcher):
 - `step`: write-ahead tracking in state.json (running before, done/failed after, `outputs` hashed).
 - `parallel`: read-only agents, or implementors only when plan.json proves independence (same wave, `independence.parallelizable`, clean `checkPlan`). Max 4 at once.
 - `chain`: sequential; `{previous}` in a later brief's text is replaced by the prior output.
+- Implementor briefs should name the spec items to cover; the implementor must map each to a named test (integration/e2e for API, UI or cross-module slices) and report the mapping in `reports/impl-<slice>.md`. `plan.json` slices that list `features` must list `tests` (checked by `checkPlan`).
 - Implementors need `slice: "<slice-id>"` so the harness sets file ownership from plan.json.

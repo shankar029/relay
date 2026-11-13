@@ -51,6 +51,8 @@ test("plan: sample is valid; overlap and bad deps are caught", () => {
   const p = plan();
   p.slices[1].files.own = ["src/api/x.ts"];
   assert.ok(checkPlan(p).some((e) => e.includes("overlap")));
+  const nt = plan(); nt.slices[0].features = ["f1"]; nt.slices[0].tests = [];
+  assert.ok(checkPlan(nt).some((e) => e.includes("no tests")));
   const q = plan();
   q.independence.parallelizable = false;
   assert.ok(checkPlan(q).length > 0);
