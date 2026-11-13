@@ -52,6 +52,16 @@ const satThreshold = (cwd: string): number => {
   return 1;
 };
 
+// relay.config.json "requiredChecks": checks that must have run green on the current HEAD before review (default: test).
+const requiredChecks = (cwd: string): string[] => {
+  for (const base of [cwd, RELAY_HOME]) {
+    const f = path.join(base, "relay.config.json");
+    if (fs.existsSync(f)) { try { const v = readJson(f).requiredChecks; return Array.isArray(v) ? v.map(String) : ["test"]; } catch { return ["test"]; } }
+  }
+  return ["test"];
+};
+const headOf = (cwd: string): string | null => { try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(); } catch { return null; } };
+
 const IS_CHILD = process.env.RELAY_CHILD === "1";
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
 
@@ -271,14 +281,14 @@ export default function (pi: ExtensionAPI) {
               {
                 const miss = phaseRequires(p.phase, featureDir()).filter((f: string) => !fs.existsSync(path.join(cwd, f)));
                 if (miss.length) throw new Error(`cannot enter ${p.phase}: missing ${miss.join(", ")}. Re-run the producing worker.`);
-                const probs = (phaseProblems as any)({ phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd) });
+                const probs = (phaseProblems as any)({ phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredChecks: requiredChecks(cwd), head: headOf(cwd) });
                 if (probs.length) throw new Error(`cannot enter ${p.phase}:\n- ${probs.join("\n- ")}`);
               }
               st.phase = p.phase; return `phase=${p.phase}`;
             case "pr_draft": {
               if (!p.text) throw new Error("text (PR summary) required; caveats go in 'caveats'");
               const fe = readJson(path.join(cwd, featureDir(), "features.json"));
-              const probs = (phaseProblems as any)({ phase: "pr", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd) });
+              const probs = (phaseProblems as any)({ phase: "pr", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredChecks: requiredChecks(cwd), head: null });
               if (probs.length) throw new Error(`cannot draft PR:\n- ${probs.join("\n- ")}`);
               const ev = path.join(cwd, featureDir(), "evidence");
               const checkLogs = fs.existsSync(ev) ? fs.readdirSync(ev).filter((n) => /^checks-.*\.log$/.test(n)).sort() : [];
@@ -300,7 +310,7 @@ export default function (pi: ExtensionAPI) {
             }
             case "finalize": {
               if (st.phase !== "pr") throw new Error(`finalize requires phase=pr (now ${st.phase})`);
-              const probs = (phaseProblems as any)({ phase: "done", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd) });
+              const probs = (phaseProblems as any)({ phase: "done", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredChecks: requiredChecks(cwd), head: null });
               if (probs.length) throw new Error(`cannot finalize:\n- ${probs.join("\n- ")}`);
               st.phase = "done";
               return "__finalize__";
@@ -381,17 +391,22 @@ export default function (pi: ExtensionAPI) {
       }
       const rows: string[] = [];
       let allOk = true;
-      for (const name of ["build", "typecheck", "lint", "test"]) {
+      const results: Record<string, any> = {};
+      for (const name of ["build", "typecheck", "lint", "sast", "test"]) {
         if (!checks[name] || (p.only && !p.only.includes(name))) continue;
         const r = spawnSync(checks[name], { cwd, shell: true, encoding: "utf8", timeout: 10 * 60_000 });
         const ok = r.status === 0;
         allOk = allOk && ok;
+        results[name] = { ok, at: new Date().toISOString(), head: headOf(cwd) };
         const log = maskText(`# RESULT: ${ok ? "PASS" : "FAIL"}\n$ ${checks[name]}\n${r.stdout}\n${r.stderr}`);
         const logRel = `${featureDir()}/evidence/checks-${name}-${Date.now()}.log`;
         S.writeFileAtomic(path.join(cwd, logRel), log.slice(-20000));
         rows.push(`${ok ? "PASS" : "FAIL"} ${name} (${logRel})${ok ? "" : "\n" + log.slice(-1500)}`);
       }
-      return text(`${allOk && rows.length && checks.test ? "ALL GREEN" : rows.length && !allOk ? "RED" : "NOT GREEN: no test check configured (or none ran). Set with harness_state action=checks (commands: {build,typecheck,lint,test})"}\n${rows.join("\n")}`);
+      if (Object.keys(results).length) withState(cwd, (st: any) => { st.checkResults = { ...st.checkResults, ...results }; return "check results saved"; });
+      const missing = requiredChecks(cwd).filter((n) => !checks[n]);
+      const verdict = rows.length && !allOk ? "RED" : missing.length || !rows.length ? `NOT GREEN: required check(s) not configured: ${missing.join(", ") || "none ran"}. Set with harness_state action=checks (commands: {build,typecheck,lint,sast,test})` : "ALL GREEN";
+      return text(`${verdict}\n${rows.join("\n")}`);
     },
   });
 

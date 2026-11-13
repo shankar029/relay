@@ -28,3 +28,17 @@ test("README is writable by implementors only (when owned)", () => {
   assert.ok(checkWrite({ role: "relay-spec-writer", rel: "README.md", featureDir: fd }));
   assert.ok(checkWrite({ role: "relay-implementor", rel: "AGENTS.md", featureDir: fd, owned: ["AGENTS.md"] }));
 });
+
+import { checkProblems } from "../lib/gates.mjs";
+test("checkProblems enforces required lint/sast/test: configured, run, green, not stale", () => {
+  const req = ["lint", "sast", "test"];
+  assert.equal(checkProblems({ checks: { test: "t" }, checkResults: { test: { ok: true, head: "a" } } }, req, "a").length, 2); // lint+sast not configured
+  const st = { checks: { lint: "l", sast: "s", test: "t" }, checkResults: { lint: { ok: true, head: "a" }, sast: { ok: false, head: "a" } } };
+  const p = checkProblems(st, req, "a").join("|");
+  assert.match(p, /sast.*FAILED/); assert.match(p, /test.*not been run/);
+  st.checkResults.sast.ok = true; st.checkResults.test = { ok: true, head: "old" };
+  assert.match(checkProblems(st, req, "newhead").join("|"), /stale/);
+  st.checkResults.test.head = "newhead"; st.checkResults.lint.head = st.checkResults.sast.head = "newhead";
+  assert.deepEqual(checkProblems(st, req, "newhead"), []);
+  assert.deepEqual(checkProblems({}, [], "x"), []);
+});
