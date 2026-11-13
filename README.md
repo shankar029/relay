@@ -2,7 +2,7 @@
 
 **Relay turns a plain-English requirement into a reviewed, tested, ready-to-open pull request.** It coordinates a team of AI specialist agents and has the *harness* (code, not the model) enforce the rules.
 
-It runs on the [pi coding agent](https://github.com/earendil-works/pi) today. A GitHub Copilot port is planned but not built.
+It runs on the [pi coding agent](https://github.com/earendil-works/pi) today. Copilot is also supported through an installer (tested with the Copilot CLI; VS Code agent mode is untested), but only partly: agents, the skill and a guard hook are ported, while the `relay_*` gates are instruction-only there. See [Copilot port](#copilot-port) for what is verified and what is not.
 
 ## Contents
 
