@@ -23,6 +23,7 @@ import { phaseProblems, renderPr } from "../../lib/gates.mjs";
 // @ts-ignore
 import { holdoutAccessProblem, holdoutResultProblems } from "../../lib/holdout.mjs";
 // @ts-ignore
+import { addUsage, budgetProblem } from "../../lib/budget.mjs";
 import { laneProblem, reviewLenses, mergeResearch, consolidateReview, reviewRerun, reviewChangedFiles, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
 // @ts-ignore
 import { enforceOwnership, quarantineStrays, commitArtefacts, addSliceWorktree, commitSliceLeftovers, mergeSlices, removeSliceWorktree, changedSince } from "../../lib/gitflow.mjs";
@@ -61,6 +62,14 @@ const requiredChecks = (cwd: string): string[] => {
   return ["test"];
 };
 const headOf = (cwd: string): string | null => { try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(); } catch { return null; } };
+
+const budgetOf = (cwd: string): any => {
+  for (const base of [cwd, RELAY_HOME]) {
+    const f = path.join(base, "relay.config.json");
+    if (fs.existsSync(f)) { try { return readJson(f).budget || {}; } catch { return {}; } }
+  }
+  return {};
+};
 
 const IS_CHILD = process.env.RELAY_CHILD === "1";
 const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd, encoding: "utf8" }).trim();
@@ -566,6 +575,7 @@ export default function (pi: ExtensionAPI) {
           });
           probs = problems();
         }
+        withState(cwd, (st: any) => { (addUsage as any)(st, agent.name, r); return "usage"; });
         const ranOk = r.exitCode === 0 && r.stopReason !== "error";
         const absent = probs;
         const ok = ranOk && absent.length === 0;

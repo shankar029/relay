@@ -33,8 +33,26 @@
         "build": { "type": "string" },
         "typecheck": { "type": "string" },
         "lint": { "type": "string" },
+        "sast": { "type": "string" },
         "test": { "type": "string" },
         "init": { "type": "string" }
+      }
+    },
+    "checkResults": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "required": ["ok"],
+        "properties": { "ok": { "type": "boolean" }, "at": { "type": "string" }, "head": { "type": ["string", "null"] } }
+      }
+    },
+    "usage": {
+      "type": "object",
+      "properties": {
+        "subagentCalls": { "type": "integer" },
+        "tokens": { "type": "number" },
+        "turns": { "type": "integer" },
+        "byAgent": { "type": "object", "additionalProperties": { "type": "object", "properties": { "calls": { "type": "integer" }, "tokens": { "type": "number" } } } }
       }
     },
     "slices": { "type": "object", "additionalProperties": { "$ref": "#/definitions/slice" } },

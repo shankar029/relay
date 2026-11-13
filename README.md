@@ -59,3 +59,8 @@ Every feature runs in its own git worktree by default (branch `relay/<slug>`, di
 ## Required checks
 
 `relay.config.json` `requiredChecks` (default `["test"]`; add `lint`, `sast`) lists checks that must be configured via `harness_state action=checks`, run through `relay_checks` and be green on the current HEAD, otherwise `set_phase review`/`pr`/`done` is refused. Results are stored in `state.checkResults`.
+
+## Budget
+
+`relay.config.json` `budget` (`maxSubagentCalls`, `maxTokens`) caps a run. Every `relay_subagent` call records calls/turns/tokens (from pi's assistant-message usage) in `state.usage` (also per agent). When a cap is hit, `relay_subagent` refuses and the orchestrator must stop and report. Token counts are only as accurate as the provider's reported usage (unverified live).
+

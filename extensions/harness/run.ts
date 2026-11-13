@@ -5,6 +5,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 // @ts-ignore plain ESM helper
 import { parseFrontmatter } from "../../lib/frontmatter.mjs";
+import { messageTokens } from "../../lib/budget.mjs";
 
 export const RELAY_HOME = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 export const HARNESS_ENTRY = path.join(RELAY_HOME, "extensions", "harness", "index.ts");
@@ -69,6 +70,8 @@ export interface RunResult {
   stderr: string;
   stopReason?: string;
   errorMessage?: string;
+  tokens: number;
+  turns: number;
 }
 
 export interface RunOptions {
@@ -91,7 +94,7 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
   fs.writeFileSync(promptFile, agent.systemPrompt, { mode: 0o600 });
   args.push("--append-system-prompt", promptFile, `Task: ${task}`);
 
-  const result: RunResult = { exitCode: 0, output: "", stderr: "" };
+  const result: RunResult = { exitCode: 0, output: "", stderr: "", tokens: 0, turns: 0 };
   try {
     result.exitCode = await new Promise<number>((resolve) => {
       const inv = piInvocation(args);
@@ -105,6 +108,8 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
         try { ev = JSON.parse(l); } catch { return; }
         if (ev.type === "message_end" && ev.message?.role === "assistant") {
           const text = (ev.message.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
+          result.turns += 1;
+          result.tokens += messageTokens(ev.message.usage);
           if (text) result.output = text;
           if (ev.message.stopReason) result.stopReason = ev.message.stopReason;
           if (ev.message.errorMessage) result.errorMessage = ev.message.errorMessage;
