@@ -63,4 +63,8 @@ test("guard hook: role-based allow/deny", () => {
   assert.ok(call("relay-implementor", "create", { path: ".git/config" }));
   assert.ok(call("relay-implementor", "create", { path: ".ai/x/state.json" }));
   assert.ok(guardDecision({ agentType: "relay-reviewer", cwd: root, toolName: "view", toolArgs: "{bad" }, env));
+  // no active feature (no RELAY_SLUG, no state.json): holdout must still be guarded
+  const none = (toolName, toolArgs) => guardDecision({ agentType: "relay-reviewer", cwd: os.tmpdir(), toolName, toolArgs }, {});
+  assert.ok(none("powershell", { command: "Get-Content .ai/x/holdout/scenarios.json" }));
+  assert.ok(none("view", { path: ".ai/x/holdout/scenarios.json" }));
 });
