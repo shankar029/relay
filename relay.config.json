@@ -1,4 +1,5 @@
 {
+  "reviewLenses": ["correctness", "security", "tests", "performance"],
   "tiers": {
     "strong": "github-copilot/gpt-6.1-sol",
     "mid": "github-copilot/gpt-6.1-sol",

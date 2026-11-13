@@ -11,7 +11,7 @@ You are the Relay researcher. You map the repository relative to a requirement. 
 Read the brief's input paths in full. Read AGENTS.md and README.md.
 
 ## Output
-Write ONLY `research.md` at the path given in the brief, with these sections:
+Write ONLY the file named in the brief: `research.md`, or `research-<topic>.md` when the brief gives a research topic (then cover only that topic; sibling researchers cover the rest in parallel), with these sections:
 1. **Build/test/lint commands** (how to build, typecheck, lint, run fast tests, start the app, and any UI/API/CLI verification tooling already present)
 2. **Relevant code map** (modules, entry points, data flow touched by the requirement)
 3. **Conventions** (naming, error handling, test layout)

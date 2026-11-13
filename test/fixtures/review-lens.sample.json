@@ -1,0 +1,12 @@
+{
+  "lens": "security",
+  "findings": [
+    {
+      "severity": "major",
+      "citation": "src/app.js:42",
+      "title": "Unsanitised input",
+      "rationale": "User input reaches the query unescaped.",
+      "fix": "Use a parameterised query."
+    }
+  ]
+}

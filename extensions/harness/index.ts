@@ -23,6 +23,8 @@ import { phaseProblems, renderPr } from "../../lib/gates.mjs";
 // @ts-ignore
 import { holdoutAccessProblem, holdoutResultProblems } from "../../lib/holdout.mjs";
 // @ts-ignore
+import { laneProblem, reviewLenses, mergeResearch, consolidateReview, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
+// @ts-ignore
 import { enforceOwnership, quarantineStrays, commitArtefacts, addSliceWorktree, commitSliceLeftovers, mergeSlices, removeSliceWorktree, changedSince } from "../../lib/gitflow.mjs";
 const S: any = S_;
 import { RELAY_HOME, loadAgents, runAgent, mapLimit } from "./run.ts";
@@ -154,7 +156,7 @@ export default function (pi: ExtensionAPI) {
       "Read/modify .ai/<slug>/state.json safely (atomic, schema-validated). Actions: init, open, get, set_phase (content-gated; 'done' is refused), pr_draft (text=summary, name=title, symptom=caveats one per line; writes pr.md), finalize (phase pr -> secret scan, commit .ai/<slug>, done; never pushes), step, counter, approval (only 'pending'), slice, checks, question, answer, artifact, lesson_add, lessons_for, unlock.",
     promptSnippet: "Change Relay run state (never edit state.json by hand)",
     parameters: Type.Object({
-      action: StringEnum(["init", "open", "get", "set_phase", "pr_draft", "finalize", "step", "counter", "approval", "slice", "checks", "question", "answer", "artifact", "lesson_add", "lessons_for", "unlock"] as const),
+      action: StringEnum(["init", "open", "get", "set_phase", "pr_draft", "finalize", "step", "counter", "approval", "slice", "checks", "question", "answer", "artifact", "lesson_add", "lessons_for", "unlock", "merge_research", "review_lenses", "consolidate_review"] as const),
       slug: Type.Optional(Type.String()),
       requirement: Type.Optional(Type.String()),
       phase: Type.Optional(Type.String()),
@@ -228,6 +230,24 @@ export default function (pi: ExtensionAPI) {
         }
         if (!slug) return text("error: no active feature; call init or open first");
         if (p.action === "get") return text(fs.readFileSync(stateFile(cwd), "utf8"));
+        if (p.action === "merge_research") {
+          const r = (mergeResearch as any)(cwd, featureDir(), p.text || "");
+          return text(r.ok ? `research.md merged from topics: ${r.topics.join(", ")}` : `error: ${r.error}`);
+        }
+        if (p.action === "review_lenses") {
+          let cfg: any = {};
+          for (const b of [cwd, RELAY_HOME]) { const f = path.join(b, "relay.config.json"); if (fs.existsSync(f)) { try { cfg = readJson(f); } catch { /* ignore */ } break; } }
+          const st0 = readJson(stateFile(cwd));
+          const base = st0.worktree?.base && st0.worktree.base !== "HEAD" ? st0.worktree.base : defaultBranch(cwd);
+          let changed: string[] = [];
+          try { changed = git(cwd, "diff", "--name-only", `${base}...HEAD`).split("\n").filter(Boolean); } catch { /* no diff */ }
+          return text(JSON.stringify({ lenses: (reviewLenses as any)(cfg, changed), maxRounds: 2 }));
+        }
+        if (p.action === "consolidate_review") {
+          const want = p.text ? String(p.text).split(",").map((s) => s.trim()).filter(Boolean) : null;
+          const r = (consolidateReview as any)(cwd, featureDir(), schema("review-lens"), want);
+          return text(r.ok ? JSON.stringify(r) : `error: ${r.error}`);
+        }
         if (p.action === "unlock") { S.releaseLock(lock()); return text("lock released"); }
         if (p.action === "lessons_for") {
           const f = path.join(cwd, ".ai", "lessons.md");
@@ -409,6 +429,7 @@ export default function (pi: ExtensionAPI) {
     }),
     step: Type.Optional(Type.String({ description: "state step id for write-ahead tracking" })),
     slice: Type.Optional(Type.String({ description: "plan.json slice id (implementors)" })),
+    lane: Type.Optional(Type.String({ description: "fan-out lane: research topic (relay-researcher -> research-<lane>.md) or review lens (relay-reviewer -> reports/review-<lane>.json); kebab-case" })),
     outputs: Type.Optional(Type.Array(Type.String(), { description: "expected output files, hashed into state on success" })),
   });
 
@@ -427,6 +448,8 @@ export default function (pi: ExtensionAPI) {
       const agents = loadAgents().filter((a) => a.name !== "relay");
       if (p.mode === "single" && p.tasks.length !== 1) return text("error: single mode needs exactly one task");
 
+      const lp = (laneProblem as any)(p.tasks);
+      if (lp) return text(`error: ${lp}`);
       let plan: any;
       const planPath = path.join(cwd, featureDir(), "plan.json");
       const needPlan = p.tasks.some((t: any) => t.agent === "relay-implementor");
@@ -468,7 +491,7 @@ export default function (pi: ExtensionAPI) {
         const lessons = fs.existsSync(lf) ? lessonsFor(fs.readFileSync(lf, "utf8"), t.agent) : [];
         const sub = (s: string) => s.replaceAll("{previous}", prev[i - 1] ?? "");
         const b = t.brief;
-        const required = requiredOutputs(t.agent, featureDir(), t.slice);
+        const required = requiredOutputs(t.agent, featureDir(), t.slice, t.lane);
         const task = [
           `## Objective\n${sub(b.objective)}`,
           `## Output format\n${sub(b.outputFormat)}`,
@@ -480,7 +503,9 @@ export default function (pi: ExtensionAPI) {
           t.agent === "relay-spec-writer" ? `## holdout/scenarios.json (hidden from implementors and reviewer; only the verifier will read it) must validate against this JSON Schema: at least 3 end-to-end behavioural user stories that are DIFFERENT from the visible features.json scenarios (cover edge cases, error paths and cross-feature flows; do not restate visible scenarios)\n\`\`\`json\n${JSON.stringify(schema("holdout"))}\n\`\`\`` : "",
           t.agent === "relay-verifier" ? `## holdout/results.json: after running every scenario in holdout/scenarios.json black-box, write holdout/results.json (schema below) with one result per scenario; pass requires non-empty evidence files; list each evidence path in 'evidence' relative to the repo/worktree root, i.e. ${featureDir()}/holdout/evidence/<file>. On failure set 'symptom' to a one-line observed behaviour (no steps; the orchestrator relays it to implementors).\n\`\`\`json\n${JSON.stringify(schema("holdout-results"))}\n\`\`\`` : "",
           t.agent === "relay-architect" ? `## plan.json must validate against this JSON Schema exactly (no extra properties; slice ids kebab-case; contracts are objects {name,pinned,location}; slice.contracts are strings; slices need dependsOn; every slice that changes code lists its test file(s) in slice.tests; slices in the SAME wave of order must have completely disjoint files.own (if two slices touch the same file, put them in separate waves, one slice per wave, in dependency order) and a wave with 2+ slices requires independence.parallelizable=true, otherwise use one slice per wave; top-level needs contracts, slices, order (array of arrays of slice ids), independence)\n\`\`\`json\n${JSON.stringify(schema("plan"))}\n\`\`\`` : "",
-          `Feature dir: ${featureDir()}${t.slice ? `\nSlice: ${t.slice}` : ""}`,
+          t.agent === "relay-reviewer" && t.lane ? `## Review lens: ${t.lane}\nReview ONLY through this lens. Checklist: ${(LENS_CHECKLISTS as any)[t.lane] || "apply the lens named above"}.\nWrite ${featureDir()}/reports/review-${t.lane}.json (JSON only, no markdown) validating against this schema with lens="${t.lane}". Every finding needs a citation "path:line" (e.g. src/app.js:42) or it is dropped. severity blocker/major = must fix before PR; minor = advisory. Use an empty findings array if clean.\n\`\`\`json\n${JSON.stringify(schema("review-lens"))}\n\`\`\`` : "",
+          t.agent === "relay-researcher" && t.lane ? `## Research topic: ${t.lane}\nCover ONLY this topic; other researchers cover the rest in parallel. Write ${featureDir()}/research-${t.lane}.md. Every claim cites path:line.` : "",
+          `Feature dir: ${featureDir()}${t.slice ? `\nSlice: ${t.slice}` : ""}${t.lane ? `\nLane: ${t.lane}` : ""}`,
         ].filter(Boolean).join("\n\n");
         if (t.step) withState(cwd, (st: any) => S.beginStep(st, t.step, { agent: t.agent, inputs: b.inputs }));
         if (t.slice) withState(cwd, (st: any) => { st.slices[t.slice] = { ...(st.slices[t.slice] || {}), status: "running" }; });
