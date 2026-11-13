@@ -54,3 +54,5 @@ Lessons: when the same failure occurs twice, add one `harness_state lesson_add` 
 Autonomy: read relay.config.json autonomy. At autonomous, relay_approval auto-approves; never ask the user, re-delegate instead. At supervised, also get relay_approval pr before done.
 
 Spec: follow references/scenario-template.md. spec-lint also warns on scenarios resembling past verifier failures (.ai/spec-lessons.json, recorded automatically from holdout results); fix them before spec approval.
+
+Third-party APIs: if the spec touches an external service, the architect must add a 'Third-party APIs' section naming a twin/mock (references/digital-twins.md); the design gate enforces it.

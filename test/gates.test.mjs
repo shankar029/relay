@@ -72,3 +72,10 @@ test("verifier failures become lessons that flag similar future scenarios", () =
   assert.equal(w.length, 1);
   assert.match(w[0], /archive\/list/);
 });
+import { thirdPartyProblems } from "../lib/twins.mjs";
+test("design gate requires twins/mocks for external services", () => {
+  assert.deepEqual(thirdPartyProblems("add todo export", "{}", "# Design"), []);
+  assert.equal(thirdPartyProblems("notify via Twilio sms", "{}", "# Design\nuse twilio").length, 1);
+  assert.equal(thirdPartyProblems("send Slack message", "{}", "# Design\n## Third-party APIs\nSlack: call it directly").length, 1);
+  assert.deepEqual(thirdPartyProblems("send Slack message", "{}", "# Design\n## Third-party APIs\nSlack: local fake server twin\n## Next"), []);
+});
