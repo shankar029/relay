@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import test from "node:test";
 import assert from "node:assert/strict";
 import fs from "node:fs";
@@ -92,11 +93,13 @@ test("state: artifact hashes detect drift", () => {
   assert.equal(S.verifyArtifacts(st, dir).length, 1);
 });
 
-test("state: lock refuses fresh holder, stale takeover needs confirmation", () => {
+test("state: lock refuses fresh holder, stale takeover needs confirmation", (t) => {
   const dir = tmp();
   const lock = path.join(dir, ".lock");
+  const other = spawn(process.execPath, ["-e", "setTimeout(()=>{},20000)"]);
+  t.after(() => other.kill());
   assert.ok(S.acquireLock(lock).ok);
-  fs.writeFileSync(lock, JSON.stringify({ pid: 2 ** 22 + 12345, timestamp: new Date().toISOString() }));
+  fs.writeFileSync(lock, JSON.stringify({ pid: other.pid, timestamp: new Date(Date.now() - 7 * 3600e3).toISOString() }));
   const st = S.lockStatus(lock);
   assert.ok(st.held && st.stale);
   assert.equal(S.acquireLock(lock).ok, false);

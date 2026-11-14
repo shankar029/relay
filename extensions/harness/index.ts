@@ -28,7 +28,7 @@ import { autonomyLevel, requiredApprovals } from "../../lib/autonomy.mjs";
 import { addUsage, budgetProblem } from "../../lib/budget.mjs";
 import { laneProblem, reviewLenses, mergeResearch, consolidateReview, reviewRerun, reviewChangedFiles, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
 // @ts-ignore
-import { enforceOwnership, quarantineStrays, commitArtefacts, addSliceWorktree, commitSliceLeftovers, mergeSlices, removeSliceWorktree, changedSince } from "../../lib/gitflow.mjs";
+import { stashPartialWork, enforceOwnership, quarantineStrays, commitArtefacts, addSliceWorktree, commitSliceLeftovers, mergeSlices, removeSliceWorktree, changedSince } from "../../lib/gitflow.mjs";
 const S: any = S_;
 import { RELAY_HOME, loadAgents, runAgent, mapLimit } from "./run.ts";
 import { WatchView } from "./watch.ts";
@@ -255,7 +255,17 @@ export default function (pi: ExtensionAPI) {
           const { state, errors } = S.loadState(stateFile(cwd), schema("state"));
           if (!state) return text(`state.json corrupt/invalid: ${errors.join("; ")}. Re-run the producing step.`);
           const report: any = { phase: state.phase, worktree: state.worktree ? { ...state.worktree, path: cwd } : null, hashMismatches: S.verifyArtifacts(state, cwd), runningSteps: [], missingCommits: [], pendingQuestions: state.pendingQuestions, pendingApprovals: [] };
-          for (const [id, s] of Object.entries<any>(state.steps)) if (s.status === "running") report.runningSteps.push(id);
+          report.resumedFrom = state.paused ? { ...state.paused } : (lk as any).dead ? { reason: "previous session died (stale lock taken over)" } : undefined;
+          report.interrupted = S.markInterrupted(state, state.paused ? "paused" : "interrupted (session died)");
+          for (const [id, s] of Object.entries<any>(state.steps)) if (s.status === "interrupted") report.runningSteps.push(id);
+          if (report.interrupted.length) {
+            // a killed worker may have left partial writes in the feature worktree; park them so the re-run starts clean
+            try { if ((stashPartialWork as any)(cwd, `${slug} ${report.interrupted.join(",")}`)) report.stashedPartialWork = true; } catch { /* best effort */ }
+          }
+          delete state.paused;
+          pausedNow = false;
+          S.saveState(stateFile(cwd), state, schema("state"));
+          if (report.interrupted.length) report.note = "interrupted steps/slices must be RE-RUN (their partial output was discarded; counters and finished work are kept)";
           for (const [id, s] of Object.entries<any>(state.slices)) {
             if (s.status !== "merged" || !s.commit) continue;
             try { git(cwd, "merge-base", "--is-ancestor", s.commit, "HEAD"); } catch { report.missingCommits.push(id); }
@@ -520,6 +530,7 @@ export default function (pi: ExtensionAPI) {
       }
       const agents = loadAgents().filter((a) => a.name !== "relay");
       if (p.mode === "single" && p.tasks.length !== 1) return text("error: single mode needs exactly one task");
+      if (pausedNow) return text("error: Relay is paused (/relay-pause). Do not launch workers; tell the user to run /relay-resume or ask you to resume.");
       {
         const { state: bst } = S.loadState(stateFile(cwd), schema("state"));
         const bp = bst ? (budgetProblem as any)(bst, budgetOf(cwd), p.tasks.length) : null;
@@ -634,6 +645,11 @@ export default function (pi: ExtensionAPI) {
         const absent = probs;
         const ok = ranOk && absent.length === 0;
         tj.finish(signal?.aborted ? "cancelled" : ok ? "done" : "failed");
+        if (signal?.aborted) {
+          // cancelled mid-run: nothing is half-recorded; the step/slice is re-runnable
+          withState(cwd, (st: any) => { if (t.step) S.finishStep(st, t.step, { status: "interrupted", outputs: [], error: "cancelled" }); if (t.slice) st.slices[t.slice] = { ...(st.slices[t.slice] || {}), status: "interrupted" }; return "cancelled"; });
+          return `### ${t.agent}${t.slice ? ` (${t.slice})` : ""} CANCELLED (interrupted; re-run it)`;
+        }
         if (t.agent === "relay-implementor") {
           (commitSliceLeftovers as any)(wcwd, t.slice, featureDir());
           okSlices[t.slice] = ok;
@@ -693,6 +709,7 @@ export default function (pi: ExtensionAPI) {
   // ---- Live status UI, worker registry, background batches ----
   const batches = new Map<string, { ac: AbortController; desc: string; hasImpl: boolean; startedAt: number }>();
   let uiCtx: any;
+  let pausedNow = false;
   let view: { slug: string; root: string } | undefined; // unfinished feature found on disk (display only; does not activate guards)
   let lastKey = "";
   let timer: ReturnType<typeof setInterval> | undefined;
@@ -817,6 +834,31 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  const pauseRun = (ctx: any, reason = "paused by user") => {
+    if (!slug) return "No active Relay feature to pause";
+    pausedNow = true;
+    const inFlight = [...batches.values()].map((b) => b.desc);
+    const dir = runtimeDir(rootOf(ctx), slug);
+    const running = (reconcileJobs(readJobs(dir)) as any[]).filter((j) => j.status === "running").map((j) => j.label);
+    for (const b of batches.values()) b.ac.abort();
+    const sf = stateFile(rootOf(ctx));
+    withState(rootOf(ctx), (st: any) => { S.pauseState(st, { reason, inFlight: [...new Set([...inFlight, ...running])] }); return "paused"; });
+    // foreground workers cannot be cancelled from a command; the pause takes effect before the next launch
+    touch();
+    return `Paused ${slug}. In flight: ${[...new Set([...inFlight, ...running])].join(", ") || "nothing"}. Background workers are being stopped; no new workers will start. Use /relay-resume to continue.`;
+  };
+  pi.registerCommand("relay-pause", {
+    description: "Gracefully pause the Relay run: stop launching workers, cancel running background ones, record what was in flight",
+    handler: async (args: string, ctx: any) => { ctx.ui.notify(pauseRun(ctx, args.trim() || "paused by user"), "info"); },
+  });
+  pi.registerCommand("relay-resume", {
+    description: "Resume a paused Relay run (the orchestrator re-opens it, re-runs interrupted workers)",
+    handler: async (_args: string, ctx: any) => {
+      if (!slug) { ctx.ui.notify("No active Relay feature; start pi and say: relay --resume <slug>", "info"); return; }
+      pausedNow = false;
+      pi.sendUserMessage(`Resume the paused feature ${slug}: call harness_state open (slug ${slug}), read its report, re-run every interrupted step/slice, then continue the pipeline.`);
+    },
+  });
   pi.registerCommand("relay-status", {
     description: "Show the active Relay feature state",
     handler: async (_args: string, ctx: any) => {

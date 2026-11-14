@@ -56,7 +56,16 @@
       }
     },
     "slices": { "type": "object", "additionalProperties": { "$ref": "#/definitions/slice" } },
-    "pendingQuestions": { "type": "array", "items": { "type": "string" } }
+    "pendingQuestions": { "type": "array", "items": { "type": "string" } },
+    "paused": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "at": { "type": "string" },
+        "reason": { "type": "string" },
+        "inFlight": { "type": "array", "items": { "type": "string" } }
+      }
+    }
   },
   "definitions": {
     "fileRef": {
@@ -70,7 +79,7 @@
       "required": ["status"],
       "additionalProperties": false,
       "properties": {
-        "status": { "enum": ["pending", "running", "done", "failed"] },
+        "status": { "enum": ["pending", "running", "done", "failed", "interrupted"] },
         "agent": { "type": "string" },
         "inputs": { "type": "array", "items": { "type": "string" } },
         "outputs": { "type": "array", "items": { "$ref": "#/definitions/fileRef" } },
@@ -90,7 +99,7 @@
       "required": ["status"],
       "additionalProperties": false,
       "properties": {
-        "status": { "enum": ["pending", "running", "merged", "failed"] },
+        "status": { "enum": ["pending", "running", "merged", "failed", "interrupted"] },
         "commit": { "type": "string" },
         "worktree": { "type": "string" }
       }
