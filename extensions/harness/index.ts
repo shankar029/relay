@@ -31,6 +31,11 @@ import { laneProblem, reviewLenses, mergeResearch, consolidateReview, reviewReru
 import { enforceOwnership, quarantineStrays, commitArtefacts, addSliceWorktree, commitSliceLeftovers, mergeSlices, removeSliceWorktree, changedSince } from "../../lib/gitflow.mjs";
 const S: any = S_;
 import { RELAY_HOME, loadAgents, runAgent, mapLimit } from "./run.ts";
+import { WatchView } from "./watch.ts";
+// @ts-ignore plain ESM helper
+import { runtimeDir, readJobs, writeJobs, upsertJob, reconcileJobs, applyEvent, buildSnapshot, renderTop, renderBottom, discoverFeatures, readLogLines } from "../../lib/status.mjs";
+// @ts-ignore plain ESM helper
+import { listWorktrees } from "../../lib/worktree.mjs";
 
 function defaultBranch(cwd: string): string {
   try { return git(cwd, "symbolic-ref", "--short", "refs/remotes/origin/HEAD"); } catch { /* no remote */ }
@@ -474,21 +479,52 @@ export default function (pi: ExtensionAPI) {
     outputs: Type.Optional(Type.Array(Type.String(), { description: "expected output files, hashed into state on success" })),
   });
 
-  pi.registerTool({
+  const subagentTool: any = {
     name: "relay_subagent",
     label: "Relay sub-agent",
-    description: "Run relay-* worker agents as isolated pi processes. mode: single (1 task), parallel (read-only agents, or implementors only if plan.json proves independence), chain (sequential; {previous} in later brief fields is replaced by prior output).",
+    description: "Run relay-* worker agents as isolated pi processes. mode: single (1 task), parallel (read-only agents, or implementors only if plan.json proves independence), chain (sequential; {previous} in later brief fields is replaced by prior output). background=true returns immediately and delivers the results as a follow-up message when the batch finishes, so the user can keep talking to you meanwhile (needs an interactive UI; otherwise it runs in the foreground). Do not start the next pipeline step until the completion message arrives.",
     promptSnippet: "Delegate to a relay-* worker agent with a structured brief",
     parameters: Type.Object({
       mode: StringEnum(["single", "parallel", "chain"] as const),
       tasks: Type.Array(TaskSchema, { minItems: 1 }),
+      background: Type.Optional(Type.Boolean({ description: "run in the background and notify on completion (default: relay.config.json background, else false)" })),
     }),
-    async execute(_id: string, p: any, signal: any, _u: any, ctx: any) {
+    async execute(_id: string, p: any, signal: any, _u: any, ctx: any, onStarted?: () => void) {
       if (!slug) return text("error: no active feature; call harness_state init/open first");
+      uiCtx = ctx;
       const cwd = rootOf(ctx);
+      const wantBg = (p.background ?? configOf(cwd).background ?? false) && ctx.hasUI && !onStarted;
+      if (wantBg) {
+        const hasImpl = p.tasks.some((t: any) => t.agent === "relay-implementor");
+        if (hasImpl && [...batches.values()].some((b) => b.hasImpl)) return text("error: an implementor batch is already running in the background; wait for its completion message");
+        const id = `b${Date.now().toString(36)}`;
+        const ac = new AbortController();
+        let started!: () => void;
+        const startedP = new Promise<null>((r) => { started = () => r(null); });
+        const desc = p.tasks.map((t: any) => `${t.agent}${t.lane || t.slice ? `(${t.lane || t.slice})` : ""}`).join(", ");
+        const doneP = Promise.resolve(subagentTool.execute(_id, { ...p, background: false }, ac.signal, _u, ctx, started))
+          .catch((e: any) => text(`error: ${e?.message || e}`));
+        const first = await Promise.race([startedP, doneP]);
+        if (first) return first;
+        batches.set(id, { ac, desc, hasImpl, startedAt: Date.now() });
+        doneP.then((res: any) => {
+          batches.delete(id);
+          touch();
+          const body = res?.content?.map((c: any) => c.text).join("\n") ?? "";
+          try {
+            pi.sendMessage({ customType: "relay-batch-done", display: true, content: `Background batch ${id} finished (${desc}):\n\n${body}` }, { deliverAs: "followUp", triggerTurn: true });
+          } catch { /* session already gone */ }
+        });
+        touch();
+        return text(`Started background batch ${id}: ${desc}. You will receive a completion message with the worker results; until then you are free to answer the user (relay_jobs list/tail shows live progress). Do not start the next pipeline step before it arrives.`);
+      }
       const agents = loadAgents().filter((a) => a.name !== "relay");
       if (p.mode === "single" && p.tasks.length !== 1) return text("error: single mode needs exactly one task");
-
+      {
+        const { state: bst } = S.loadState(stateFile(cwd), schema("state"));
+        const bp = bst ? (budgetProblem as any)(bst, budgetOf(cwd), p.tasks.length) : null;
+        if (bp) return text(`error: budget exhausted: ${bp}. Stop and ask the user whether to raise relay.config.json budget.`);
+      }
       const lp = (laneProblem as any)(p.tasks);
       if (lp) return text(`error: ${lp}`);
       let plan: any;
@@ -578,15 +614,16 @@ export default function (pi: ExtensionAPI) {
             ...(required.every((f) => fs.existsSync(path.join(wcwd, f))) ? planProblems() : []),
           ];
         };
+        const tj = trackJob(cwd, t, agent);
         let r = await runAgent({
-          cwd: wcwd, agent, task, signal,
+          cwd: wcwd, agent, task, signal, ...tj.hooks(1),
           env: { RELAY_ROLE: agent.name, RELAY_FEATURE: slug!, RELAY_OWNED: JSON.stringify(ownedGlobs) },
         });
         let probs = problems();
         for (let attempt = 0; attempt < 2 && r.exitCode === 0 && probs.length; attempt++) {
           // automatic retries with concrete feedback
           r = await runAgent({
-            cwd: wcwd, agent, signal,
+            cwd: wcwd, agent, signal, ...tj.hooks(attempt + 2, probs[0]),
             task: `${task}\n\n## Previous attempt failed validation. Fix exactly this and write the files to disk:\n${probs.map((x) => `- ${x}`).join("\n")}`,
             env: { RELAY_ROLE: agent.name, RELAY_FEATURE: slug!, RELAY_OWNED: JSON.stringify(ownedGlobs) },
           });
@@ -596,6 +633,7 @@ export default function (pi: ExtensionAPI) {
         const ranOk = r.exitCode === 0 && r.stopReason !== "error";
         const absent = probs;
         const ok = ranOk && absent.length === 0;
+        tj.finish(signal?.aborted ? "cancelled" : ok ? "done" : "failed");
         if (t.agent === "relay-implementor") {
           (commitSliceLeftovers as any)(wcwd, t.slice, featureDir());
           okSlices[t.slice] = ok;
@@ -626,6 +664,7 @@ export default function (pi: ExtensionAPI) {
         }
       }
 
+      onStarted?.();
       let results: string[];
       if (p.mode === "chain") { results = []; for (let i = 0; i < p.tasks.length; i++) results.push(await runTask(p.tasks[i], i)); }
       else results = await mapLimit<any, string>(p.tasks, 4, runTask);
@@ -647,6 +686,134 @@ export default function (pi: ExtensionAPI) {
       const strays: string[] = (quarantineStrays as any)(cwd, featureDir());
       const strayNote = strays.length ? `\n\nSTRAY FILES moved to ${featureDir()}/_quarantine/ (not in the allowed artefact layout): ${strays.join(", ")}` : "";
       return text(preface + results.join("\n\n") + strayNote);
+    },
+  };
+  pi.registerTool(subagentTool);
+
+  // ---- Live status UI, worker registry, background batches ----
+  const batches = new Map<string, { ac: AbortController; desc: string; hasImpl: boolean; startedAt: number }>();
+  let uiCtx: any;
+  let view: { slug: string; root: string } | undefined; // unfinished feature found on disk (display only; does not activate guards)
+  let lastKey = "";
+  let timer: ReturnType<typeof setInterval> | undefined;
+  let jobSeq = 0;
+  const target = () => (slug ? { slug, root: root ?? uiCtx?.cwd ?? process.cwd() } : view);
+
+  const refresh = () => {
+    try {
+      if (!uiCtx?.hasUI) return;
+      const t = target();
+      if (!t) return;
+      const { state } = S.loadState(path.join(t.root, ".ai", t.slug, "state.json"), schema("state"));
+      if (!state) return;
+      let plan: any = null;
+      try { plan = readJson(path.join(t.root, ".ai", t.slug, "plan.json")); } catch { /* no plan yet */ }
+      const jobs = reconcileJobs(readJobs(runtimeDir(t.root, t.slug)));
+      const snap = buildSnapshot({ state, plan, jobs });
+      const w = Math.max(40, (process.stdout.columns || 100) - 2);
+      const top = renderTop(snap, w), bottom = renderBottom(snap, w);
+      const key = JSON.stringify([top, bottom]);
+      if (key === lastKey) return;
+      lastKey = key;
+      uiCtx.ui.setWidget("relay-pipeline", top);
+      uiCtx.ui.setWidget("relay-steps", bottom, { placement: "belowEditor" });
+      uiCtx.ui.setStatus("relay", `relay ${snap.phase}${snap.running ? ` ●${snap.running}` : ""}`);
+    } catch { /* the status UI must never break the run */ }
+  };
+  let pending: ReturnType<typeof setTimeout> | undefined;
+  const touch = () => { if (!pending) pending = setTimeout(() => { pending = undefined; refresh(); }, 250); };
+
+  // One job record per worker invocation (retries reuse it); persisted in the worktree's git dir.
+  const trackJob = (cwd: string, t: any, agent: any) => {
+    const dir = runtimeDir(cwd, slug!);
+    const id = `${Date.now().toString(36)}${(jobSeq++).toString(36)}-${agent.name.replace(/^relay-/, "")}`;
+    const logFile = path.join(dir, "logs", `${id}.jsonl`);
+    let phase = "";
+    try { phase = readJson(stateFile(cwd)).phase; } catch { /* ignore */ }
+    let job: any = {
+      id, agent: agent.name, label: [agent.name.replace(/^relay-/, ""), t.lane || t.slice].filter(Boolean).join(":"),
+      phase, step: t.step, slice: t.slice, lane: t.lane, log: logFile, status: "running", startedAt: Date.now(), tools: 0, tokens: 0, turns: 0, attempt: 1,
+    };
+    let lastWrite = 0;
+    const save = () => { try { upsertJob(dir, job); } catch { /* best effort */ } touch(); };
+    return {
+      hooks(attempt: number, why?: string) {
+        job = { ...job, status: "running", attempt, endedAt: undefined };
+        if (attempt > 1) { try { fs.mkdirSync(path.dirname(logFile), { recursive: true }); fs.appendFileSync(logFile, JSON.stringify({ type: "relay_marker", text: `attempt ${attempt}: previous output failed validation: ${String(why).slice(0, 160)}` }) + "\n"); } catch { /* ignore */ } }
+        save();
+        return {
+          logFile,
+          onSpawn: (pid: number) => { job = { ...job, pid }; save(); },
+          onEvent: (ev: any) => { job = applyEvent(job, ev); if (Date.now() - lastWrite > 400) { lastWrite = Date.now(); save(); } },
+        };
+      },
+      finish(status: string) { job = { ...job, status, endedAt: Date.now() }; save(); },
+    };
+  };
+
+  const startUi = (ctx: any) => {
+    uiCtx = ctx;
+    if (!ctx.hasUI) return;
+    try {
+      const roots = (listWorktrees(ctx.cwd) as any[]).map((w) => w.path);
+      const open = (discoverFeatures(roots) as any[]).find((f) => f.phase !== "done");
+      if (open) view = { slug: open.slug, root: open.root };
+    } catch { /* not a git repo */ }
+    lastKey = "";
+    refresh();
+    if (!timer) { timer = setInterval(refresh, 1000); (timer as any).unref?.(); }
+  };
+  pi.on("session_start", async (_e: any, ctx: any) => { startUi(ctx); });
+  pi.on("session_shutdown", async () => {
+    if (timer) { clearInterval(timer); timer = undefined; }
+    for (const b of batches.values()) b.ac.abort();
+  });
+
+  const openWatch = async (ctx: any, focus?: string) => {
+    uiCtx = ctx;
+    const t = target();
+    if (!t || !ctx.hasUI) { ctx.ui?.notify?.("No active Relay feature to watch", "info"); return; }
+    const dir = runtimeDir(t.root, t.slug);
+    await ctx.ui.custom((tui: any, theme: any, _kb: any, done: (v: undefined) => void) => new WatchView(tui, theme, dir, done, focus), {
+      overlay: true,
+      overlayOptions: { width: "100%", maxHeight: "95%", anchor: "top-left", margin: 0 },
+    });
+  };
+  pi.registerShortcut("alt+w", { description: "Relay: watch worker sessions (esc returns to the orchestrator)", handler: (ctx: any) => openWatch(ctx) });
+  pi.registerCommand("relay-watch", {
+    description: "Live read-only view of Relay worker sessions: /relay-watch [worker]",
+    handler: async (args: string, ctx: any) => { await openWatch(ctx, args.trim() || undefined); },
+  });
+
+  pi.registerTool({
+    name: "relay_jobs",
+    label: "Relay jobs",
+    description: "Inspect or cancel Relay workers. list: all worker sessions with status; tail: last lines of one worker's live output (id or label e.g. implementor:api); cancel: abort a background batch by id (see relay_subagent background).",
+    promptSnippet: "Check progress of running Relay workers (use this to answer user questions mid-run)",
+    parameters: Type.Object({
+      action: StringEnum(["list", "tail", "cancel"] as const),
+      id: Type.Optional(Type.String()),
+      lines: Type.Optional(Type.Number()),
+    }),
+    async execute(_id: string, p: any, _s: any, _u: any, ctx: any) {
+      if (!slug) return text("error: no active feature");
+      const dir = runtimeDir(rootOf(ctx), slug);
+      const jobs = reconcileJobs(readJobs(dir));
+      if (p.action === "list") {
+        const rows = jobs.map((j: any) => `${j.id}  ${j.label}  ${j.status}  phase=${j.phase}  ${Math.round(((j.endedAt || Date.now()) - j.startedAt) / 1000)}s  tools=${j.tools} tokens=${j.tokens}${j.status === "running" && j.last ? `  now: ${j.last}` : ""}`);
+        const bs = [...batches.entries()].map(([id, b]) => `batch ${id}: ${b.desc} (running ${Math.round((Date.now() - b.startedAt) / 1000)}s)`);
+        return text([...bs, ...rows].join("\n") || "no workers yet");
+      }
+      if (p.action === "tail") {
+        const j = jobs.find((x: any) => x.id === p.id || x.label === p.id) || [...jobs].reverse().find((x: any) => x.status === "running");
+        if (!j) return text("no matching worker");
+        const ls = (readLogLines(j.log) as string[]).slice(-(p.lines || 30));
+        return text(`${j.label} [${j.status}]\n${ls.join("\n") || "(no output yet)"}`);
+      }
+      const b = batches.get(String(p.id));
+      if (!b) return text(`no running background batch ${p.id}`);
+      b.ac.abort();
+      return text(`cancelling batch ${p.id}; its completion message will report what finished`);
     },
   });
 

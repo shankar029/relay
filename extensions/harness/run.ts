@@ -80,11 +80,15 @@ export interface RunOptions {
   task: string;
   env: Record<string, string>;
   signal?: AbortSignal;
+  logFile?: string; // raw JSON event stream is appended here (the live viewer tails it)
+  onSpawn?: (pid: number) => void;
+  onEvent?: (ev: any) => void;
 }
 
 // Each worker is an isolated pi process (JSON event stream); workers never get relay_subagent.
 export async function runAgent(opts: RunOptions): Promise<RunResult> {
-  const { cwd, agent, task, env, signal } = opts;
+  const { cwd, agent, task, env, signal, logFile, onSpawn, onEvent } = opts;
+  if (logFile) fs.mkdirSync(path.dirname(logFile), { recursive: true });
   const args = ["--mode", "json", "-p", "--no-session", "-ne", "-e", HARNESS_ENTRY, "-ns"];
   const model = modelForTier(cwd, agent.tier);
   if (model) args.push("--model", model);
@@ -101,11 +105,14 @@ export async function runAgent(opts: RunOptions): Promise<RunResult> {
       const proc = spawn(inv.command, inv.args, {
         cwd, shell: false, stdio: ["ignore", "pipe", "pipe"], env: { ...process.env, ...env, RELAY_CHILD: "1" },
       });
+      if (proc.pid) onSpawn?.(proc.pid);
       let buf = "";
       const line = (l: string) => {
         if (!l.trim()) return;
         let ev: any;
         try { ev = JSON.parse(l); } catch { return; }
+        if (logFile && ev.type !== "message_update") { try { fs.appendFileSync(logFile, l + "\n"); } catch { /* best effort */ } }
+        try { onEvent?.(ev); } catch { /* UI must never break a worker */ }
         if (ev.type === "message_end" && ev.message?.role === "assistant") {
           const text = (ev.message.content || []).filter((c: any) => c.type === "text").map((c: any) => c.text).join("\n");
           result.turns += 1;

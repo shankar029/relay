@@ -23,6 +23,7 @@ It runs on the [pi coding agent](https://github.com/earendil-works/pi) today. Co
 15. [Contributing](#contributing)
 16. [Repo layout and tests](#repo-layout-and-tests)
 17. [Status and known limitations](#status-and-known-limitations)
+    - also: [Live status and background workers](#live-status-and-background-workers)
 18. [Copilot port](#copilot-port)
 
 ## Why Relay
@@ -426,6 +427,15 @@ Relay has been run live in pi several times against small sample Node APIs, with
 - The bash write guards and the holdout read guard are **pattern based** and can be obfuscated around (for example `python -c "open('../x','w')"`). The ownership revert is the backstop for writes inside the repo. Reads of ignored or untracked paths are not policed.
 - Evidence comes from a few small sample repos and one platform (Windows). Results elsewhere are unknown. Token use and duration vary between runs.
 
+## Live status and background workers
+
+Inside an interactive pi session Relay shows progress and keeps the orchestrator free for questions.
+
+- **Status panels.** A pipeline bar (all stages, current one marked, with done/total counts) sits above the editor. A step panel below the editor lists the current stage's workers (implementor slices, researcher lanes, review lenses) with state, elapsed time, tools, tokens and last activity. A short footer status mirrors it. State comes from `state.json`, `.ai/<slug>/` files and a job registry on disk (`<git-dir>/relay/<slug>/jobs.json` plus per-worker JSONL logs, never committed), so it is rebuilt after a restart or resume.
+- **Watch a worker.** Press `alt+w` or run `/relay-watch [worker]` for a live, read-only tail of a worker's tool calls and output. `Tab`/`←`/`→` switch worker, `↑↓`/`PgUp`/`PgDn` scroll, `f` follows, `Esc`/`q` returns to the orchestrator.
+- **Background workers.** `relay_subagent` accepts `background: true` (or set `"background": true` in `relay.config.json`). The call returns at once, the orchestrator stays available, and a completion message starts its next turn. The `relay_jobs` tool (`list`, `tail`, `cancel`) lets it answer "what is it doing?". One implementor batch runs in the background at a time; ownership, test gate and budget checks are unchanged. `pi -p` runs have no UI, so they always run in the foreground.
+- **What pi cannot do.** There is no screen-pinned top region (widgets sit above and below the editor and scroll with the chat), and no interactive attach to a worker: workers are separate `pi --mode json -p` processes, so the viewer is read-only.
+- **Verified live (pi RPC mode, real model):** background start, a mid-run question answered via `relay_jobs tail`, the completion-triggered turn, widget updates about once a second, and widgets rebuilt after restarting pi. **Verified by unit/smoke test only:** the `WatchView` rendering and key handling (`test/status.test.mjs`, a headless render). **Not verified:** layout in a real terminal, the `alt+w` overlay in a TTY, cancel, parallel background batches, crash-interrupted marking, and a full run with background on. `scripts/live-run.mjs` stops at the first `agent_end`, so use it with foreground workers.
 ## Publishing
 
 Publishing to npm is done by `.github/workflows/publish.yml` when a GitHub release is published (or by running the workflow manually). It runs `npm run check`, checks the package version matches the release tag, then runs `npm publish --access public --provenance`. One-time setup: create an npm automation or granular access token and save it as the repo secret `NPM_TOKEN`. Not yet run: the workflow has not been exercised.
