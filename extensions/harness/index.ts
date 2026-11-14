@@ -711,7 +711,7 @@ export default function (pi: ExtensionAPI) {
       const jobs = reconcileJobs(readJobs(runtimeDir(t.root, t.slug)));
       const snap = buildSnapshot({ state, plan, jobs });
       const w = Math.max(40, (process.stdout.columns || 100) - 2);
-      const top = renderTop(snap, w), bottom = renderBottom(snap, w);
+      const top = renderTop(snap, w, { color: !process.env.NO_COLOR }), bottom = renderBottom(snap, w, { color: !process.env.NO_COLOR, maxRows: Math.max(3, (process.stdout.rows || 30) - 22) });
       const key = JSON.stringify([top, bottom]);
       if (key === lastKey) return;
       lastKey = key;

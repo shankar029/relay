@@ -7,15 +7,27 @@ import { buildSnapshot, renderTop, renderBottom, applyEvent, reconcileJobs, upse
 
 const state = (phase, extra = {}) => ({ slug: "demo", phase, approvals: {}, slices: {}, usage: { tokens: 1500 }, pendingQuestions: [], ...extra });
 
-test("top bar marks done/current/pending stages and pending approvals", () => {
+test("top bar is a stepper: nodes joined by lines, labels beneath, detail for the current stage", () => {
   const snap = buildSnapshot({ state: state("spec-approval", { approvals: { spec: "pending" } }) });
-  const top = renderTop(snap, 200).join("\n");
-  assert.match(top, /✔ spec(?! ok)/);
-  assert.match(top, /▶ spec ok ✋/);
-  assert.match(top, /○ implement/);
-  assert.match(top, /awaiting approval: spec/);
+  const [, nodes, labels, detail] = renderTop(snap, 200);
+  assert.equal([...nodes].filter((c) => c === "✔").length, 4);
+  assert.equal([...nodes].filter((c) => c === "●").length, 1);
+  assert.equal([...nodes].filter((c) => c === "○").length, 8);
+  assert.match(nodes, /✔─+●─+○/);
+  assert.match(labels, /spec ok/);
+  assert.match(detail, /Waiting for spec approval.*approval pending: spec/);
+  assert.ok(!/\x1b/.test(renderTop(snap, 200).join("")));
+  assert.match(renderTop(snap, 200, { color: true })[1], /\x1b\[32m/);
 });
 
+test("narrow terminals show a window around the current stage with scroll markers", () => {
+  const snap = buildSnapshot({ state: state("implement") });
+  const lines = renderTop(snap, 50);
+  assert.ok(lines.every((l) => l.length <= 50));
+  assert.match(lines[1], /^‹/);
+  assert.match(lines[1], /›\s*$/);
+  assert.match(lines[2], /implement/);
+});
 test("implement stage lists every plan slice with live job info", () => {
   const plan = { slices: [{ id: "api" }, { id: "ui" }, { id: "docs" }] };
   const jobs = [{ id: "1", agent: "relay-implementor", label: "implementor:api", phase: "implement", slice: "api", status: "running", startedAt: 0, tools: 4, tokens: 2000, last: "edit src/a.js" }];
@@ -23,7 +35,10 @@ test("implement stage lists every plan slice with live job info", () => {
   const snap = buildSnapshot({ state: st, plan, jobs, now: 5000 });
   assert.deepEqual(snap.children.map((c) => c.status), ["running", "done", "pending"]);
   const bottom = renderBottom(snap, 200).join("\n");
-  assert.match(bottom, /● slice api \[running\].*4 tools.*edit src\/a\.js/);
+  assert.match(bottom, /Implement · 1\/3 done · 1 running/);
+  assert.match(bottom, /● slice api\s+4 tools/);
+  assert.match(bottom, /▸ edit src\/a\.js/);
+  assert.match(bottom, /alt\+w/);
   assert.match(bottom, /✔ slice ui/);
 });
 
@@ -77,4 +92,14 @@ test("discoverFeatures finds unfinished features newest first", () => {
   const f = discoverFeatures([root]);
   assert.deepEqual(f.map((x) => x.slug), ["b", "a"]);
   fs.rmSync(root, { recursive: true });
+});
+
+test("bottom panel puts failures first and collapses extra rows", () => {
+  const jobs = ["a", "b", "c", "d", "e"].map((l, i) => ({ id: String(i), agent: "relay-reviewer", label: `reviewer:${l}`, lane: l, phase: "review", status: l === "e" ? "failed" : i < 2 ? "done" : "running", startedAt: 0, last: "read x" }));
+  const lines = renderBottom(buildSnapshot({ state: state("review"), jobs, now: 3000 }), 100, { maxRows: 3 });
+  assert.match(lines[0], /2\/5 done · 2 running · 1 need attention/);
+  assert.match(lines[1], /✖ reviewer:e/);
+  assert.match(lines.join("\n"), /\+2 done/);
+  assert.ok(lines.every((l) => l.length <= 100));
+  assert.ok(!/\x1b/.test(lines.join("")));
 });
