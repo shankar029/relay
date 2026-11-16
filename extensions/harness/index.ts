@@ -856,6 +856,7 @@ export default function (pi: ExtensionAPI) {
     handler: async (_args: string, ctx: any) => {
       if (!slug) { ctx.ui.notify("No active Relay feature; start pi and say: relay --resume <slug>", "info"); return; }
       pausedNow = false;
+      try { withState(rootOf(ctx), (st: any) => { delete st.paused; return "resumed"; }); } catch { /* state unreadable; open will repair */ }
       pi.sendUserMessage(`Resume the paused feature ${slug}: call harness_state open (slug ${slug}), read its report, re-run every interrupted step/slice, then continue the pipeline.`);
     },
   });
