@@ -1,6 +1,6 @@
 {
   "name": "relay-harness",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "type": "module",
   "description": "Requirement-to-PR harness for the pi coding agent: spec, design, parallel implementation, evidence-gated verification and review by specialist agents, with code-enforced rules and resumable per-feature worktrees.",
   "repository": {
