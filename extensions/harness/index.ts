@@ -33,6 +33,9 @@ const S: any = S_;
 import { RELAY_HOME, loadAgents, runAgent, mapLimit } from "./run.ts";
 import { WatchView } from "./watch.ts";
 // @ts-ignore plain ESM helper
+import * as I_ from "../../lib/init.mjs";
+const I: any = I_;
+// @ts-ignore plain ESM helper
 import { runtimeDir, readJobs, writeJobs, upsertJob, reconcileJobs, applyEvent, buildSnapshot, renderTop, renderBottom, discoverFeatures, readLogLines } from "../../lib/status.mjs";
 // @ts-ignore plain ESM helper
 import { listWorktrees } from "../../lib/worktree.mjs";
@@ -395,6 +398,164 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  const initTool = () => pi.registerTool({
+    name: "relay_init",
+    label: "Repo init",
+    description: "Prepare a repo for Relay (/relay-init). Actions: preflight, bootstrap_git, detect, preview, apply (items: agents-md|gitignore|config), install_verifier, baseline, commit, report. Anything that writes user files or installs software asks the user to confirm first, regardless of autonomy.",
+    parameters: Type.Object({
+      action: StringEnum(["preflight", "bootstrap_git", "detect", "preview", "apply", "install_verifier", "baseline", "commit", "report"] as const),
+      items: Type.Optional(Type.Array(Type.String())),
+      refresh: Type.Optional(Type.Boolean()),
+    }),
+    async execute(_id: string, p: any, _s: any, _u: any, ctx: any) {
+      const cwd = ctx.cwd ?? process.cwd();
+      const dir = path.join(cwd, ".ai", I.INIT_SLUG);
+      const rel = (f: string) => posix(path.relative(cwd, f));
+      const ask = async (title: string, msg: string): Promise<boolean> => ctx.hasUI ? !!(await ctx.ui.confirm(title, msg)) : false;
+      const stateP = path.join(dir, "init.json");
+      const st: any = fs.existsSync(stateP) ? readJson(stateP) : { applied: [], skipped: [], written: [] };
+      const save = () => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(stateP, JSON.stringify(st, null, 2)); };
+      const detection = () => I.detect(cwd);
+      const readIf = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "");
+      try {
+        switch (p.action) {
+          case "preflight": return text(JSON.stringify(I.preflight(cwd), null, 2));
+          case "bootstrap_git": {
+            const pf = I.preflight(cwd);
+            if (pf.isRepo && pf.commits > 0) return text("already a git repo with commits; nothing to do");
+            if (!(await ask("Initialise git?", `${pf.isRepo ? "This repo has no commits." : "This folder is not a git repo."} Relay needs a repo with at least one commit. Run 'git init -b main' and make an initial commit of the current files?`))) return text("declined; /relay-init cannot continue without a git repo with a commit");
+            const g = (...a: string[]) => execFileSync("git", ["-c", "user.name=Relay", "-c", "user.email=relay@localhost", ...a], { cwd, encoding: "utf8" }).trim();
+            if (!pf.isRepo) g("init", "-q", "-b", "main");
+            const gi = path.join(cwd, ".gitignore");
+            if (!fs.existsSync(gi)) fs.writeFileSync(gi, "node_modules/\n.env\n.env.*\n");
+            g("add", "-A"); g("commit", "-q", "-m", "chore: initial commit (relay init)");
+            return text(`git ready: ${g("rev-parse", "--short", "HEAD")}`);
+          }
+          case "detect": {
+            const d = detection();
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(path.join(dir, "detection.json"), JSON.stringify(d, null, 2));
+            return text(`detection written to ${rel(path.join(dir, "detection.json"))}\n${JSON.stringify({ stacks: d.stacks, apps: d.apps, checks: d.checks, ui: d.ui, ci: d.ci, runtime: d.runtime }, null, 2)}`);
+          }
+          case "preview": {
+            const d = detection();
+            const draft = readIf(path.join(dir, "agents-draft.md"));
+            const ex = readIf(path.join(cwd, "AGENTS.md"));
+            const m = draft ? I.mergeAgentsMd(ex, draft) : null;
+            const gi = I.mergeGitignore(readIf(path.join(cwd, ".gitignore")));
+            let cfg: any = {}; try { cfg = readJson(path.join(cwd, "relay.config.json")); } catch { /* none */ }
+            const mc = I.mergeConfig(cfg, d, st.verifier);
+            return text([
+              m ? `AGENTS.md (${m.mode}${m.changed ? "" : ", unchanged"}):\n${ex ? I.unifiedDiff(ex, m.content) || "(no change)" : m.content}` : "AGENTS.md: no draft yet (run the repo scout)",
+              `.gitignore: add ${gi.added.join(", ") || "nothing"}`,
+              `relay.config.json: add keys ${mc.added.join(", ") || "nothing"}`,
+              `verifier plan: ${JSON.stringify(I.verifierPlan(d))}`,
+            ].join("\n\n"));
+          }
+          case "apply": {
+            const d = detection();
+            const want: string[] = p.items?.length ? p.items : ["agents-md", "gitignore", "config"];
+            const out: string[] = [];
+            for (const item of want) {
+              if (item === "agents-md") {
+                const draft = readIf(path.join(dir, "agents-draft.md"));
+                if (!draft) { out.push("agents-md: no draft; run the repo scout first"); continue; }
+                const ex = readIf(path.join(cwd, "AGENTS.md"));
+                const m = I.mergeAgentsMd(ex, draft);
+                if (!m.changed) { out.push("agents-md: already up to date"); continue; }
+                const shown = ex ? I.unifiedDiff(ex, m.content) : m.content;
+                if (!(await ask(`Write AGENTS.md (${m.mode})?`, shown.slice(0, 6000)))) { st.skipped.push("AGENTS.md (declined)"); out.push("agents-md: declined"); continue; }
+                S.writeFileAtomic(path.join(cwd, "AGENTS.md"), m.content);
+                st.written.push("AGENTS.md"); st.applied.push(`AGENTS.md ${m.mode}`); out.push(`agents-md: written (${m.mode})`);
+              } else if (item === "gitignore") {
+                const f = path.join(cwd, ".gitignore");
+                const g = I.mergeGitignore(readIf(f));
+                if (!g.added.length) { out.push("gitignore: already complete"); continue; }
+                if (!(await ask("Update .gitignore?", `Add:\n${g.added.join("\n")}`))) { st.skipped.push(".gitignore (declined)"); out.push("gitignore: declined"); continue; }
+                S.writeFileAtomic(f, g.content);
+                st.written.push(".gitignore"); st.applied.push(`.gitignore +${g.added.length}`); out.push(`gitignore: added ${g.added.join(", ")}`);
+              } else if (item === "config") {
+                const f = path.join(cwd, "relay.config.json");
+                let cur: any = null; try { cur = readJson(f); } catch { /* none */ }
+                const c = I.mergeConfig(cur, d, st.verifier);
+                if (!c.added.length) { out.push("config: nothing to add"); continue; }
+                const shown = JSON.stringify(Object.fromEntries(c.added.map((k: string) => [k, c.config[k]])), null, 2);
+                if (!(await ask(`${cur ? "Update" : "Create"} relay.config.json?`, shown))) { st.skipped.push("relay.config.json (declined)"); out.push("config: declined"); continue; }
+                S.writeFileAtomic(f, JSON.stringify(c.config, null, 2) + "\n");
+                st.written.push("relay.config.json"); st.applied.push(`relay.config.json +${c.added.join(",")}`); out.push(`config: added ${c.added.join(", ")}`);
+              }
+            }
+            save();
+            return text(out.join("\n"));
+          }
+          case "install_verifier": {
+            const plan = I.verifierPlan(detection());
+            const item = plan.items[0];
+            if (!item) return text(`nothing to install.\n${plan.notes.join("\n")}`);
+            const tools = path.join(cwd, I.TOOLS_DIR);
+            if (!p.refresh && fs.existsSync(path.join(tools, "node_modules", "playwright")) && fs.existsSync(path.join(tools, "shot.mjs"))) { st.verifier = { tools: I.TOOLS_DIR, shot: `${I.TOOLS_DIR}/shot.mjs`, kind: "playwright" }; save(); return text("verifier tooling already installed (use refresh to reinstall)"); }
+            if (!(await ask("Install browser verifier tooling?", `${item.summary}\n\nWill run in ${I.TOOLS_DIR}:\n${item.commands.join("\n")}\n\nDownloads Chromium (~150MB).\n${plan.notes.join("\n")}`))) { st.skipped.push("verifier tooling (declined)"); save(); return text("declined"); }
+            fs.mkdirSync(tools, { recursive: true });
+            if (!fs.existsSync(path.join(tools, "package.json"))) fs.writeFileSync(path.join(tools, "package.json"), JSON.stringify({ name: "relay-verifier-tools", private: true, type: "module" }, null, 2) + "\n");
+            fs.writeFileSync(path.join(tools, "shot.mjs"), I.SHOT_SCRIPT);
+            for (const c of item.commands) {
+              let r = spawnSync(c, { cwd: tools, shell: true, encoding: "utf8", timeout: 10 * 60_000 });
+              if (r.status !== 0 && /npm install/.test(c)) {
+                // the registry's `latest` tag may be an unpublishable alpha: retry with the newest stable release
+                const vs = spawnSync("npm view playwright versions --json", { cwd: tools, shell: true, encoding: "utf8", timeout: 60_000 });
+                const stable = I.latestStable(vs.stdout || "");
+                if (stable) r = spawnSync(`${c}@${stable}`, { cwd: tools, shell: true, encoding: "utf8", timeout: 10 * 60_000 });
+              }
+              if (r.status !== 0) { const err = maskText(`${r.stdout}\n${r.stderr}`).slice(-600); st.verifier = { status: "failed", detail: `${c}: ${err.replace(/\s+/g, " ").trim().slice(-300)}` }; save(); return text(`FAILED: ${c}\n${err}`); }
+            }
+            const shotsDir = path.join(dir, "evidence"); fs.mkdirSync(shotsDir, { recursive: true });
+            const png = path.join(shotsDir, "smoke.png");
+            fs.rmSync(png, { force: true });
+            const sm = spawnSync(process.execPath, [path.join(tools, "shot.mjs"), "data:text/html,<h1>relay smoke</h1>", png], { cwd, encoding: "utf8", timeout: 120_000 });
+            const ok = sm.status === 0 && fs.existsSync(png) && fs.statSync(png).size > 0;
+            st.verifier = ok ? { tools: I.TOOLS_DIR, shot: `${I.TOOLS_DIR}/shot.mjs`, kind: "playwright", status: "installed; smoke screenshot ok", detail: rel(png) } : { status: "failed", detail: "smoke test" };
+            if (ok) { st.written.push(`${I.TOOLS_DIR}/package.json`, `${I.TOOLS_DIR}/shot.mjs`); st.applied.push("verifier tooling (playwright)"); }
+            save();
+            return text(ok ? `installed; smoke screenshot ${rel(png)} (${fs.statSync(png).size} bytes)\n${plan.notes.join("\n")}` : `smoke test FAILED\n${maskText(`${sm.stdout}\n${sm.stderr}`).slice(-1500)}\n${plan.notes.join("\n")}`);
+          }
+          case "baseline": {
+            const d = detection();
+            let cfg: any = {}; try { cfg = readJson(path.join(cwd, "relay.config.json")); } catch { /* none */ }
+            const checks = { ...d.checks, ...(cfg.checks || {}) };
+            if (!Object.keys(checks).length) return text("no checks detected; nothing to baseline");
+            if (!(await ask("Run baseline checks?", `Runs (may take a while):\n${Object.entries(checks).map(([k, v]) => `${k}: ${v}`).join("\n")}`))) return text("declined");
+            st.baseline = I.runBaseline(cwd, checks, { evidenceDir: path.join(dir, "evidence") });
+            save();
+            fs.writeFileSync(path.join(dir, "baseline.json"), JSON.stringify(st.baseline, null, 2));
+            return text(Object.entries(st.baseline).map(([k, v]: any) => `${k}: ${v.status}${v.evidence ? ` [${v.evidence}]` : ""}`).join("\n"));
+          }
+          case "commit": {
+            const files = [...new Set<string>(st.written)].filter((f) => fs.existsSync(path.join(cwd, f)));
+            if (!files.length) return text("nothing written by init; nothing to commit");
+            if (!(await ask("Commit init files?", `Commit (no push): ${files.join(", ")}`))) return text("declined");
+            execFileSync("git", ["add", "--", ...files], { cwd });
+            const lock = path.join(cwd, I.TOOLS_DIR, "package-lock.json");
+            if (fs.existsSync(lock)) execFileSync("git", ["add", "--", rel(lock)], { cwd });
+            const staged = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd, encoding: "utf8" }).trim();
+            if (!staged) return text("already committed");
+            execFileSync("git", ["-c", "user.name=Relay", "-c", "user.email=relay@localhost", "commit", "-q", "-m", "chore: relay init (AGENTS.md, config, verifier tooling)\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>"], { cwd });
+            return text(`committed ${execFileSync("git", ["rev-parse", "--short", "HEAD"], { cwd, encoding: "utf8" }).trim()}; nothing pushed`);
+          }
+          case "report": {
+            const d = detection();
+            let pf: any = null; try { pf = I.preflight(cwd); } catch { /* skip */ }
+            const rep = I.renderReport({ preflight: pf, detection: d, applied: st.applied, skipped: st.skipped, verifier: st.verifier, baseline: st.baseline, notes: I.verifierPlan(d).notes });
+            fs.mkdirSync(dir, { recursive: true });
+            fs.writeFileSync(path.join(dir, "init-report.md"), rep);
+            return text(rep);
+          }
+        }
+      } catch (e: any) { return text(`error: ${e.message}`); }
+      return text("unknown action");
+    },
+  });
+  if (!IS_CHILD) initTool();
+
   pi.registerTool({
     name: "relay_approval",
     label: "User approval",
@@ -422,6 +583,10 @@ export default function (pi: ExtensionAPI) {
       if (!slug) return text("error: no active feature");
       const cwd = rootOf(ctx);
       let checks = (readJson(stateFile(cwd)).checks || {}) as Record<string, string>;
+      if (!Object.keys(checks).length && configOf(cwd).checks && typeof configOf(cwd).checks === "object") {
+        checks = configOf(cwd).checks; // written by /relay-init
+        withState(cwd, (st: any) => { st.checks = checks; return "checks from relay.config.json"; });
+      }
       if (!Object.keys(checks).length) {
         // fall back to package.json scripts so an unconfigured repo is not "green" by default
         try {
@@ -589,6 +754,7 @@ export default function (pi: ExtensionAPI) {
           `## Lessons for your role\n${lessons.map((l: any) => `- ${l.symptom} => ${l.rule}`).join("\n") || "(none)"}`,
           required.length ? `## Required output files (authoritative; override any other file names above)\nWrite exactly these files with the write tool, relative to the working directory:\n${required.map((f) => `- ${f}`).join("\n")}\nThe task is not done until each exists on disk.` : "",
           t.agent === "relay-spec-writer" ? `## holdout/scenarios.json (hidden from implementors and reviewer; only the verifier will read it) must validate against this JSON Schema: at least 3 end-to-end behavioural user stories that are DIFFERENT from the visible features.json scenarios (cover edge cases, error paths and cross-feature flows; do not restate visible scenarios)\n\`\`\`json\n${JSON.stringify(schema("holdout"))}\n\`\`\`` : "",
+          t.agent === "relay-verifier" && configOf(cwd).verifier?.shot ? `## Browser tooling (installed by /relay-init)\nFor browser UIs use Playwright via the pre-installed helper (absolute paths; the tools dir is not inside feature worktrees): node ${path.join(cwd, configOf(cwd).verifier.shot)} <url> <out.png>. For custom flows, write scripts under verify-tools/ that import from ${path.join(cwd, configOf(cwd).verifier.tools || ".relay/tools", "node_modules", "playwright")}. Save screenshots as evidence files.` : "",
           t.agent === "relay-verifier" ? `## holdout/results.json: after running every scenario in holdout/scenarios.json black-box, write holdout/results.json (schema below) with one result per scenario; pass requires non-empty evidence files; list each evidence path in 'evidence' relative to the repo/worktree root, i.e. ${featureDir()}/holdout/evidence/<file>. On failure set 'symptom' to a one-line observed behaviour (no steps; the orchestrator relays it to implementors).\n\`\`\`json\n${JSON.stringify(schema("holdout-results"))}\n\`\`\`` : "",
           t.agent === "relay-architect" ? `## plan.json must validate against this JSON Schema exactly (no extra properties; slice ids kebab-case; contracts are objects {name,pinned,location}; slice.contracts are strings; slices need dependsOn; every slice that changes code lists its test file(s) in slice.tests; slices in the SAME wave of order must have completely disjoint files.own (if two slices touch the same file, put them in separate waves, one slice per wave, in dependency order) and a wave with 2+ slices requires independence.parallelizable=true, otherwise use one slice per wave; top-level needs contracts, slices, order (array of arrays of slice ids), independence)\n\`\`\`json\n${JSON.stringify(schema("plan"))}\n\`\`\`` : "",
           t.agent === "relay-reviewer" && t.lane ? `## Review lens: ${t.lane}\nReview ONLY through this lens. Checklist: ${(LENS_CHECKLISTS as any)[t.lane] || "apply the lens named above"}.\nWrite ${featureDir()}/reports/review-${t.lane}.json (JSON only, no markdown) validating against this schema with lens="${t.lane}". Every finding needs a citation "path:line" (e.g. src/app.js:42) or it is dropped. severity blocker/major = must fix before PR; minor = advisory. Use an empty findings array if clean.\n\`\`\`json\n${JSON.stringify(schema("review-lens"))}\n\`\`\`` : "",
@@ -617,11 +783,18 @@ export default function (pi: ExtensionAPI) {
           const ch = changedSince(wcwd, taskHead);
           return testGate([...ch].filter((f: string) => matchesAny(ownedGlobs, f)));
         };
+        const scoutProblemsFn = () => {
+          if (t.agent !== "relay-repo-scout" || !required.every((f) => fs.existsSync(path.join(wcwd, f)))) return [] as string[];
+          let report: any = null;
+          try { report = JSON.parse(fs.readFileSync(path.join(wcwd, featureDir(), "scout-report.json"), "utf8")); } catch { /* reported below */ }
+          return I.scoutProblems({ report, draft: fs.readFileSync(path.join(wcwd, featureDir(), "agents-draft.md"), "utf8"), cwd: wcwd }) as string[];
+        };
         const problems = () => {
           if (taskHead) reverted.push(...(enforceOwnership as any)(wcwd, taskHead, allowedFile).reverted);
           return [
             ...testProblems(),
             ...required.filter((f) => !fs.existsSync(path.join(wcwd, f))).map((f) => `missing output ${f}`),
+            ...scoutProblemsFn(),
             ...(required.every((f) => fs.existsSync(path.join(wcwd, f))) ? planProblems() : []),
           ];
         };
@@ -858,6 +1031,13 @@ export default function (pi: ExtensionAPI) {
       pausedNow = false;
       try { withState(rootOf(ctx), (st: any) => { delete st.paused; return "resumed"; }); } catch { /* state unreadable; open will repair */ }
       pi.sendUserMessage(`Resume the paused feature ${slug}: call harness_state open (slug ${slug}), read its report, re-run every interrupted step/slice, then continue the pipeline.`);
+    },
+  });
+  pi.registerCommand("relay-init", {
+    description: "Prepare this repo for Relay: scout it, draft AGENTS.md, configure checks and verifier tooling (asks before writing/installing). --refresh to redo.",
+    handler: async (args: string, _ctx: any) => {
+      const refresh = /--refresh/.test(args);
+      pi.sendUserMessage(`Run the Relay init flow${refresh ? " in refresh mode" : ""} as described in skills/relay/references/init.md (relay_init tool). Do not start a feature.`);
     },
   });
   pi.registerCommand("relay-status", {

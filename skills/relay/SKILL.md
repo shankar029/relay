@@ -5,7 +5,7 @@ description: Orchestrates a requirement through research, spec, design, implemen
 
 # Relay orchestrator
 
-Usage: `/skill:relay <requirement>` or `/skill:relay --resume [slug]`.
+Usage: `/skill:relay <requirement>`, `/skill:relay --resume [slug]`, or `/skill:relay --init [--refresh]` (prepare the repo: see `references/init.md`; no feature is started).
 
 You are the orchestrator. You coordinate; you do not write code. You write only `requirement.md`, `decisions.md` and `.ai/lessons.md`. You are the only role that talks to the user. Workers are `relay-*` agents (see `agents/`) run through the `relay_subagent` tool.
 
@@ -52,6 +52,7 @@ Lessons: when the same failure occurs twice, add one `harness_state lesson_add` 
 - `references/brief-template.md`: delegation brief fields.
 - `references/resume.md`: resume protocol and state semantics.
 - `references/workflow.md`: per-phase inputs, outputs and gates.
+- `references/init.md`: `--init` / `--refresh` flow (repo scout, AGENTS.md, verifier tooling).
 
 Autonomy: read relay.config.json autonomy. At autonomous, relay_approval auto-approves; never ask the user, re-delegate instead. At supervised, also get relay_approval pr before done.
 
