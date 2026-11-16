@@ -2,7 +2,7 @@
   "name": "relay-harness",
   "version": "0.1.0",
   "type": "module",
-  "description": "Relay: orchestrator + specialist-agent harness from requirement to PR",
+  "description": "Requirement-to-PR harness for the pi coding agent: spec, design, parallel implementation, evidence-gated verification and review by specialist agents, with code-enforced rules and resumable per-feature worktrees.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/shankar029/relay.git"
@@ -17,7 +17,11 @@
     "pi-skill",
     "copilot",
     "agents",
-    "orchestrator"
+    "orchestrator",
+    "multi-agent",
+    "harness",
+    "pull-request",
+    "verification"
   ],
   "license": "MIT",
   "pi": {

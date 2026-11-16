@@ -6,29 +6,82 @@ It runs on the [pi coding agent](https://github.com/earendil-works/pi) today. Co
 
 ## Contents
 
-1. [Why Relay](#why-relay)
-2. [Relay in 60 seconds](#relay-in-60-seconds)
-3. [Architecture](#architecture)
-4. [Before you start: expectations](#before-you-start-expectations)
-5. [Prerequisites and install](#prerequisites-and-install)
-6. [Your first run](#your-first-run)
-7. [The steps, one by one](#the-steps-one-by-one)
-8. [Worked example (real excerpts from run 14)](#worked-example-real-excerpts-from-run-14)
-9. [Steering, resuming and finishing a run](#steering-resuming-and-finishing-a-run)
-10. [Concepts and glossary](#concepts-and-glossary)
-11. [Configuration](#configuration)
-12. [Safeguards](#safeguards)
-13. [Troubleshooting](#troubleshooting)
-14. [FAQ](#faq)
-15. [Contributing](#contributing)
-16. [Repo layout and tests](#repo-layout-and-tests)
-17. [Status and known limitations](#status-and-known-limitations)
-    - also: [Live status and background workers](#live-status-and-background-workers)
-18. [Copilot port](#copilot-port)
+1. [Quickstart (30 seconds)](#quickstart-30-seconds)
+2. [Why Relay](#why-relay)
+3. [How Relay manages context](#how-relay-manages-context)
+4. [Relay in 60 seconds](#relay-in-60-seconds)
+5. [Architecture](#architecture)
+6. [Before you start: expectations (when to use / not)](#before-you-start-expectations)
+7. [Prerequisites and install](#prerequisites-and-install)
+8. [Repo init (/relay-init)](#repo-init-relay-init)
+9. [Your first run](#your-first-run)
+10. [The steps, one by one](#the-steps-one-by-one)
+11. [Steering, resuming and finishing a run](#steering-resuming-and-finishing-a-run)
+12. [Concepts and glossary](#concepts-and-glossary)
+13. [Configuration](#configuration)
+14. [Safeguards](#safeguards)
+15. [Troubleshooting](#troubleshooting)
+16. [FAQ](#faq)
+17. [Worked example (docs/worked-example.md)](#worked-example)
+18. [Contributing](#contributing)
+19. [Repo layout and tests](#repo-layout-and-tests)
+20. [Status and known limitations (incl. live status UI)](#status-and-known-limitations)
+21. [Copilot port](#copilot-port)
+
+## Quickstart (30 seconds)
+
+```bash
+pi install git:github.com/shankar029/relay   # npm (`pi install npm:relay-harness`) works only after the first npm publish, which has not happened yet
+cd /path/to/your/repo               # a git repo with tests
+pi
+```
+```
+/relay-init                          # once per repo: scouts it, drafts AGENTS.md, configures checks (asks before writing)
+/skill:relay Add todo archiving and a public HTML dashboard
+```
+
+Then edit `relay.config.json` so each tier maps to a model your pi can reach ([Configuration](#configuration)). Approve the spec and design when asked. Relay never pushes: you push and open the PR from `pr.md`.
 
 ## Why Relay
+Asking one AI agent to "build this feature" works for small things. For anything bigger it tends to skip the spec, mark its own homework, forget tests, wander across unrelated files, and leave no trail you can audit or resume. Relay splits the job into roles, and the **harness (code, not the model) enforces the rules**. Each point below is enforced in code; follow the pointer to check it.
 
-Asking one AI agent to "build this feature" works for small things. For anything bigger it tends to skip the spec, mark its own homework, forget tests, wander across unrelated files, and leave no trail you can audit or resume. Relay splits the job into roles. Each role writes a small artefact. The harness checks the artefacts and the rules.
+| Differentiator | What the code does | Where |
+|---|---|---|
+| **Evidence-gated passes** | Only the verifier can set a feature to `passes`, and a pass needs non-empty evidence files on disk. The orchestrator and implementors have no such tool. | `relay_set_passes` in `extensions/harness/index.ts`, `lib/gates.mjs`, `test/gates.test.mjs` |
+| **Hidden holdout tests** | The spec-writer authors extra scenarios in `holdout/`; implementors and reviewers cannot read them. The verifier scores them; failures go back as one-line symptoms only. | `checkRead` in `lib/policy.mjs`, `lib/holdout.mjs`, `test/holdout.test.mjs` |
+| **Disjoint file ownership, reverted if violated** | Parallel slices own disjoint files. Writes outside a slice's ownership are reverted after the worker finishes (bash included). | `enforceOwnership` in `lib/gitflow.mjs`, `checkPlan` in `lib/plan.mjs`, `test/gitflow.test.mjs` |
+| **Human gates; no push, no PR** | You approve the spec and design (`relay_approval`). Relay commits artefacts locally and writes `pr.md`; it has no push or PR tool. | `relay_approval` in `extensions/harness/index.ts`, `lib/autonomy.mjs`, `lib/worktree.mjs` |
+| **Resumable on-disk state, per-feature worktrees** | State, artefacts and lock live in `.ai/<slug>/` inside a dedicated worktree and branch. A killed run resumes; interrupted workers are re-run. | `lib/state.mjs`, `lib/worktree.mjs`, `test/recovery.test.mjs`, `skills/relay/references/resume.md` |
+| **Specialists in separate processes** | Each worker is a fresh pi process with a limited tool set and role guards. | `extensions/harness/run.ts`, `agents/*.md` |
+| **Live stepper and worker UI** | A stage stepper and per-worker panel driven from on-disk status, plus a read-only live worker viewer (`alt+w`). | `lib/status.mjs`, `extensions/harness/watch.ts`, `test/status.test.mjs` |
+| **Portable formats** | Agent Skills (`skills/relay/SKILL.md`), `agents/<name>.md`, a pi extension, and a Copilot installer (partly verified; see [Copilot port](#copilot-port)). | `lib/copilot.mjs`, `scripts/gen-copilot-agents.mjs` |
+
+No benchmark or accuracy claims are made here: we have not measured Relay against other tools.
+
+## How Relay manages context
+
+Long agent sessions degrade as the conversation fills with code and tool output. Relay's design keeps each context small and moves state to disk. This section describes only what the code does.
+
+```mermaid
+flowchart LR
+  subgraph O["Orchestrator (one long session)"]
+    D["decisions, approvals,<br/>phase, no code"]
+  end
+  O -- "brief: objective, inputs,<br/>required outputs, lessons" --> W["Worker<br/>fresh pi process<br/>(own context)"]
+  W -- "writes files only" --> A[(".ai/&lt;slug&gt;/<br/>research, spec, design,<br/>plan, reports, evidence")]
+  A -- "role-scoped inputs" --> W2["Next worker<br/>(fresh context)"]
+  A -- "state.json" --> O
+```
+
+- **Small orchestrator.** It holds decisions and phase, not code; it may write only `requirement.md`, `decisions.md`, `pr.md` and `lessons.md` (`checkWrite`, `lib/policy.mjs`).
+- **Workers are fresh processes.** `runAgent` in `extensions/harness/run.ts` starts a new pi process per task with `--no-session`: a worker sees only its brief and the files it reads, never the orchestrator's conversation.
+- **Artefacts are the hand-off.** Research is written once to `.ai/<slug>/research*.md` and reused by the architect and implementors instead of being re-derived. Layout is enforced by `isLayoutFile`; stray files are quarantined.
+- **Role-scoped inputs.** The brief lists the files each role reads; the read guard blocks the rest (e.g. holdout is hidden, the spec-writer cannot read `README.md`) (`checkRead`).
+- **Injected required outputs.** `relay_subagent` appends the exact files and JSON schemas a worker must produce, so briefs do not need to restate them.
+- **Role-scoped lessons.** Past failures recorded in `.ai/lessons.md` are filtered per role (`lessonsFor`, `lib/lessons.mjs`) and injected into that role's brief only.
+- **Resume from disk.** `harness_state open` rebuilds the picture from `state.json` and the artefacts (`skills/relay/references/resume.md`).
+
+**Honest limits.** The orchestrator's own conversation still grows over a long run. What exists today: `resume.md` says the orchestrator *may* end its session at a phase boundary and be restarted with `/skill:relay --resume <slug>`, because nothing needed lives only in the conversation. Relay does **not** restart or compact the orchestrator for you, does not measure its context use, and the extension has no compaction logic of its own. pi's own auto-compaction (shown in its footer) is outside Relay's control. We make no numeric claims about context savings.
 
 ## Relay in 60 seconds
 
@@ -76,6 +129,12 @@ flowchart TB
 - **Time and cost.** Run 14 (an audit trail plus webhooks feature on a small Node API) took about **36 minutes** and about **4.9M tokens** over 14 delegated calls (from `state.json`: 09:39Z to 10:15Z). It is a real multi-agent run, not a quick edit. That is one data point, not a benchmark.
 - **Budget.** The default config caps a run at 60 delegated calls (`budget.maxSubagentCalls`). You can also set `maxTokens`.
 - **Approvals.** At the default `gated` level you are asked to approve the spec and the design.
+
+**When to use Relay**
+
+- Multi-file features where you want a written spec, a reviewed design, tests, independent verification and an auditable trail.
+- Work you may need to pause, kill or resume, or hand to someone else via `.ai/<slug>/`.
+- Repos with runnable tests, where "done" can be checked by evidence.
 
 **When not to use Relay**
 
@@ -154,72 +213,20 @@ Relay looks for `relay.config.json` in the current directory first, then in the 
 - *Spec:* every requirement has a concrete, observable scenario in `features.json`. Open questions are flagged, not guessed. Holdout scenarios are deliberately hidden from you too.
 - *Design:* slices do not overlap on files, each code slice lists its tests, third-party APIs are faked with a mock or twin (see `skills/relay/references/digital-twins.md`).
 
-## Worked example (real excerpts from run 14)
+## Repo init (`/relay-init`)
 
-Run 14 used this requirement on a small Node/Express-style todo API (`sample-api`, outside this repo): *"Add an audit trail and outbound webhooks to the sample API. (1) Audit log ... exposed via GET /todos/:id/history (404 unknown id). (2) Webhooks: POST /webhooks ... (3) GET /stats/activity ..."*. Approvals in this run were **simulated** with `--simulate-approvals`. Excerpts are trimmed.
+Run once per repo (and with `--refresh` later) before your first feature: `/relay-init` in pi, or `/skill:relay --init [--refresh]`. It starts no feature. The flow is in `skills/relay/references/init.md`; the logic is in `lib/init.mjs` and the `relay_init` tool.
 
-**1. Approval prompt** (what a human sees in the driver or in pi, title `Approve spec?` or `Approve design?`):
+1. **Preflight.** Needs a git repo with at least one commit; if not, it offers `git init -b main` plus an initial commit (asks first). Reports dirty tree, detached HEAD, default branch, remotes (optional).
+2. **Detect** (file-based, no guessing): stacks, apps and their kind (browser UI / API / CLI / library), package manager, candidate build/test/lint/typecheck/run commands, test frameworks, ports, runtime version pins vs your Node, docker compose services, CI files (and local-vs-CI check mismatches), git hooks, gitleaks/semgrep availability, `.env` files, third-party SDKs, mobile/desktop shells.
+3. **Repo scout.** A read-only specialist (`agents/relay-repo-scout.md`) runs the candidate commands and drafts `AGENTS.md`. The harness gate (`scoutProblems`) rejects the draft unless every command marked `verified` has exit code 0 and a non-empty log under `.ai/repo-init/evidence/`, and every `not-run` has a reason.
+4. **You approve every write.** `AGENTS.md` (shown in full or as a diff; an existing file is never overwritten: only a marked `relay:init` block is added or replaced), `.gitignore` entries (`.ai/*/holdout/`, locks, quarantine, tool `node_modules`, `.env*`), and `relay.config.json` (only missing keys: detected `checks`, `requiredChecks`, `autonomy`, `budget`, `verifier`). These prompts are always interactive, even at `autonomy=autonomous`.
+5. **Verifier tooling (browser UIs, with consent).** Installs Playwright + Chromium into `.relay/tools` (its own `package.json`; your dependencies and lockfiles are untouched) and runs a smoke screenshot. Verifier tasks then get the absolute helper path (feature worktrees do not contain untracked tool dirs). API repos need nothing installed; CLI/library/mobile get notes about limits. Linux browser OS libraries (`playwright install-deps`, needs sudo), gitleaks/semgrep, docker services, hooks and CI are reported, never changed.
+6. **Baseline** (optional, confirmed) runs the detected checks and stores logs; destructive-looking commands are skipped. **Commit** (confirmed) stages only the files init wrote and never pushes. A summary report is written to `.ai/repo-init/init-report.md`.
 
-```
-[APPROVAL REQUIRED] Approve spec?
-<short message from the orchestrator pointing at .ai/<slug>/spec.md and features.json>
-Approve? [y/N]
-```
+Re-running is idempotent: unchanged files produce no diff and no prompt.
 
-(In pi, the same title appears as a confirm dialog. In run 14 the driver logged `[SIMULATED APPROVAL]` for both.)
-
-**2. `spec.md`** (excerpt). Note the honest "unresolved" markers:
-
-```markdown
-# Spec: Task item audit trail and outbound webhooks
-## Scope
-- Store-recorded audit events for successful task item creation, updates, deletion, and archive-like changes.
-- `GET /todos/:id/history`, with 404 for a never-known item ID.
-...
-## Non-goals
-- No new archive endpoint or archive field is invented by this specification; the required archive-like operation needs clarification.
-```
-
-**3. `features.json`** (excerpt). Each scenario has steps and a `passes` flag that only the verifier may set, with evidence files:
-
-```json
-{ "name": "preserve-todo-api",
-  "scenarios": [ { "name": "todo-crud-remains-compatible",
-    "steps": ["Start a fresh application using the existing createApp() call ...",
-              "POST /todos with JSON {\"title\":\"write release notes\"}; expect 201 ...", "..."],
-    "passes": true } ] }
-```
-
-**4. `plan.json`** (excerpt). Pinned contracts that slices must honour:
-
-```json
-{ "contracts": [ { "name": "audit-event", "pinned": true,
-    "location": ".ai/todo-audit-webhooks/design.md#audit-event",
-    "description": "src/audit.js exports AUDIT_ACTIONS and EVENT_BY_ACTION. AuditEvent has exactly todoId, ISO UTC timestamp, create/update/delete action, and detached before/after snapshots ..." } ],
-  "slices": [ "audit-history-activity", "webhook-lifecycle-delivery" ] }
-```
-
-The two slices in this run had a dependency between them, so they ran one after the other, not in parallel.
-
-**5. `pr.md`** (excerpt):
-
-```markdown
-# Add todo audit trail, webhooks and activity stats
-## Traceability (spec item -> scenario -> evidence)
-| Spec item | Scenario | Result | Evidence |
-| Preserve existing task item HTTP behaviour | todo-crud-remains-compatible | pass | `.ai/todo-audit-webhooks/evidence/todo-crud-remains-compatible.json` |
-...
-## Verification
-- holdout satisfaction: 4/4 (100%; hidden scenarios, not committed; the per-scenario `passes` gate above stays authoritative)
-## Review
-# Review (consolidated from 4 lenses: correctness, performance, security, tests)
-- **minor** `src/webhooks.js:27` [security] Default webhook delivery permits requests to internal destinations
-## Caveats
-- Archive-like changes are audited as ordinary 'update' (no archive trigger exists in the API).
-- Webhook destinations are not restricted (SSRF) — demo only; restrict before exposing to untrusted callers.
-```
-
-Run 14 outcome (from its `state.json`): phase `done`, 14 delegated calls, review rounds used 2 of 2, both slices `merged`. It used one researcher.
+**Verified vs not.** Unit tests: `test/init.test.mjs` (preflight, detection, merge/diff, gitignore/config idempotence, scout gate, baseline, scout write policy). Live, real pi TUI on Windows with approvals simulated by pressing Enter on each dialog (so the human check was not exercised), on a browser-UI sample (todo web app, initially not a git repo): git bootstrap, scout run (about 6 min, passed the gate, evidence logs written), AGENTS.md/.gitignore/relay.config.json approvals, baseline and commit all worked. That run exposed a bug: the npm feed's latest Playwright tag pointed at an alpha whose playwright-core was missing (ETARGET); install_verifier now retries with the newest stable version (latestStable, unit-tested). After that fix, Playwright 1.65 plus Chromium and a screenshot were verified by hand in .relay/tools, but the full tool-driven install plus smoke step was not re-run end to end. A --refresh re-run reached the scout and failed with model_not_supported on the sample's default mid tier, so refresh idempotence was not verified live (pin 	iers.mid in relay.config.json); idempotence is covered by unit tests only. Not verified: an API-only repo live, macOS/Linux, the Copilot port of init, non-Node stacks beyond unit-level detection, Python/Go/Rust command discovery on real repos, docker compose and CI detection on real repos, `--refresh` on large repos.
 
 ## Steering, resuming and finishing a run
 
@@ -377,6 +384,10 @@ git branch --list "relay/<slug>--*"      # delete leftover slice branches too, i
 **Can the model approve its own spec?** Not through `relay_approval`, which is a human prompt. At `autonomous` autonomy approvals are skipped on purpose, and in simulated runs the driver auto-approves.
 
 **Does it work without tests in the repo?** Poorly. The test gate and required checks expect runnable tests.
+
+## Worked example
+
+Real excerpts from run 14 (spec, design, traceability, review) are in [docs/worked-example.md](docs/worked-example.md).
 
 ## Contributing
 
