@@ -36,6 +36,7 @@ import { RELAY_HOME, loadAgents, runAgent, mapLimit } from "./run.ts";
 import { WatchView } from "./watch.ts";
 // @ts-ignore plain ESM helper
 import * as I_ from "../../lib/init.mjs";
+import * as WI from "../../lib/wsinit.mjs";
 const I: any = I_;
 // @ts-ignore plain ESM helper
 import { runtimeDir, readJobs, writeJobs, upsertJob, reconcileJobs, applyEvent, buildSnapshot, renderTop, renderBottom, discoverFeatures, readLogLines } from "../../lib/status.mjs";
@@ -454,9 +455,9 @@ export default function (pi: ExtensionAPI) {
   const initTool = () => pi.registerTool({
     name: "relay_init",
     label: "Repo init",
-    description: "Prepare a repo for Relay (/relay-init). Actions: preflight, bootstrap_git, detect, preview, apply (items: agents-md|gitignore|config), install_verifier, baseline, commit, report. Anything that writes user files or installs software asks the user to confirm first, regardless of autonomy.",
+    description: "Prepare a repo for Relay (/relay-init). Actions: workspace_plan (workspace root: per-repo init status), preflight, bootstrap_git, detect, preview, apply (items: agents-md|gitignore|config), install_verifier, baseline, commit, report. Anything that writes user files or installs software asks the user to confirm first, regardless of autonomy.",
     parameters: Type.Object({
-      action: StringEnum(["preflight", "bootstrap_git", "detect", "preview", "apply", "install_verifier", "baseline", "commit", "report"] as const),
+      action: StringEnum(["preflight", "bootstrap_git", "detect", "preview", "apply", "install_verifier", "baseline", "commit", "report", "workspace_plan"] as const),
       items: Type.Optional(Type.Array(Type.String())),
       refresh: Type.Optional(Type.Boolean()),
       repo: Type.Optional(Type.String({ description: "workspace (multi-repo) mode: run the action inside this child repo; omit to act on the workspace root (repo map, workspace AGENTS.md/config, verifier tools)" })),
@@ -479,9 +480,20 @@ export default function (pi: ExtensionAPI) {
         const per = wsd0.repos.map((r: any) => ({ name: r.name, d: I.detect(r.path) }));
         return { ...(per.find((x: any) => x.d.ui?.length || x.d.ui === true)?.d || per[0].d), perRepo: Object.fromEntries(per.map((x: any) => [x.name, { stacks: x.d.stacks, apps: x.d.apps, checks: x.d.checks, ui: x.d.ui }])) };
       };
+      const wsDets = () => Object.fromEntries(wsd0.repos.map((r: any) => [r.name, I.detect(r.path)]));
+      const wsDraft = () => { const dets = wsDets(); const rels = (WI.relations as any)(wsd0.repos, dets); const repoAgents = Object.fromEntries(wsd0.repos.map((r: any) => [r.name, (WI.repoInitStatus as any)(r).agentsMd])); return { dets, draft: (WI.renderWorkspaceAgents as any)(wsd0.repos, dets, rels, { repoAgents }) as string }; };
       const readIf = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "");
       try {
         switch (p.action) {
+          case "workspace_plan": {
+            if (!wsMode) return text("not at a workspace root; use repo=<name> or run in the parent folder");
+            let cfg: any = {}; try { cfg = readJson(path.join(cwd, "relay.config.json")); } catch { /* none */ }
+            const scanned = (WS.listRepos as any)(cwd, {}).map((r: any) => r.name);
+            const listed = wsd0.repos.map((r: any) => r.name);
+            const excluded = (cfg.workspace?.exclude || []).map(String);
+            const unlisted = scanned.filter((n: string) => !listed.includes(n) && !excluded.includes(n));
+            return text(JSON.stringify({ mode: "workspace", root: cwd, repos: wsd0.repos.map((r: any) => (WI.repoInitStatus as any)(r)), unlistedRepos: unlisted, note: unlisted.length ? "these child repos are not in relay.config.json workspace.repos; Relay will not touch them unless you add them" : undefined, next: "for each repo: harness_state init worktree=false dir=<repo> slug=repo-init, run relay-repo-scout, then relay_init repo=<name> preview/apply/install_verifier/baseline/commit; finally at the root: apply items=[config, agents-md]" }, null, 2));
+          }
           case "preflight":
             if (wsMode) return text(JSON.stringify({ mode: "workspace", root: cwd, note: "parent is not a git repo (expected). Init each repo with repo=<name>; Relay will not git-init or commit the workspace root.", repos: wsd0.repos }, null, 2));
             return text(JSON.stringify(I.preflight(cwd), null, 2));
@@ -507,13 +519,14 @@ export default function (pi: ExtensionAPI) {
             const d = detection();
             const draft = readIf(path.join(dir, "agents-draft.md"));
             const ex = readIf(path.join(cwd, "AGENTS.md"));
-            const m = draft ? I.mergeAgentsMd(ex, draft) : null;
+            const wsd = wsMode ? wsDraft() : null;
+            const m = wsd ? I.mergeAgentsMd(ex, wsd.draft) : draft ? I.mergeAgentsMd(ex, draft) : null;
             const gi = I.mergeGitignore(readIf(path.join(cwd, ".gitignore")));
             let cfg: any = {}; try { cfg = readJson(path.join(cwd, "relay.config.json")); } catch { /* none */ }
-            const mc = I.mergeConfig(cfg, d, st.verifier);
+            const mc = wsd ? (WI.mergeWorkspaceConfig as any)(cfg, wsd0.repos, wsd.dets) : I.mergeConfig(cfg, d, st.verifier);
             return text([
               m ? `AGENTS.md (${m.mode}${m.changed ? "" : ", unchanged"}):\n${ex ? I.unifiedDiff(ex, m.content) || "(no change)" : m.content}` : "AGENTS.md: no draft yet (run the repo scout)",
-              `.gitignore: add ${gi.added.join(", ") || "nothing"}`,
+              wsMode ? ".gitignore: not touched at the workspace root (per repo)" : `.gitignore: add ${gi.added.join(", ") || "nothing"}`,
               `relay.config.json: add keys ${mc.added.join(", ") || "nothing"}`,
               `verifier plan: ${JSON.stringify(I.verifierPlan(d))}`,
             ].join("\n\n"));
@@ -524,7 +537,7 @@ export default function (pi: ExtensionAPI) {
             const out: string[] = [];
             for (const item of want) {
               if (item === "agents-md") {
-                const draft = readIf(path.join(dir, "agents-draft.md"));
+                const draft = wsMode ? wsDraft().draft : readIf(path.join(dir, "agents-draft.md"));
                 if (!draft) { out.push("agents-md: no draft; run the repo scout first"); continue; }
                 const ex = readIf(path.join(cwd, "AGENTS.md"));
                 const m = I.mergeAgentsMd(ex, draft);
@@ -543,7 +556,7 @@ export default function (pi: ExtensionAPI) {
               } else if (item === "config") {
                 const f = path.join(cwd, "relay.config.json");
                 let cur: any = null; try { cur = readJson(f); } catch { /* none */ }
-                const c = I.mergeConfig(cur, d, st.verifier);
+                const c = wsMode ? (WI.mergeWorkspaceConfig as any)(cur, wsd0.repos, wsDets()) : I.mergeConfig(cur, d, st.verifier);
                 if (!c.added.length) { out.push("config: nothing to add"); continue; }
                 const shown = JSON.stringify(Object.fromEntries(c.added.map((k: string) => [k, c.config[k]])), null, 2);
                 if (!(await ask(`${cur ? "Update" : "Create"} relay.config.json?`, shown))) { st.skipped.push("relay.config.json (declined)"); out.push("config: declined"); continue; }

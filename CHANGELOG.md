@@ -1,5 +1,9 @@
 # Changelog
 
+## 0.3.1
+
+- Workspace-aware `/relay-init`: run at the parent folder to list repo init status (`workspace_plan`), init each repo, then write root `relay.config.json` (missing keys only: `workspace`, per-repo `checks`, ...) and a workspace `AGENTS.md` (repo map, roles, inter-repo links with evidence, commands, change order). Never overwrites user config; unlisted repos untouched.
+
 ## 0.3.0
 
 - Multi-repo workspace mode: run from a non-git parent folder with child repos. Per-feature container (`.relay-features/<slug>/`) holds `.ai/<slug>/`; lazy per-repo worktrees on `relay/<slug>`; slices carry a `repo`; per-repo ownership, test gate, checks (`<repo>:test`), merges; one `pr-<repo>.md` per repo plus a feature `pr.md`; `[repo]` tags in the status UI. See docs/multi-repo.md.

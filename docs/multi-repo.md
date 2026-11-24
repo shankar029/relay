@@ -46,6 +46,10 @@ Behaviour:
 - **Resume / pause / crash**: container is re-attached by slug; interrupted workers' partial writes are stashed in every repo worktree; merged-slice commits are verified per repo; the lock lives in the container.
 - **Init**: `relay_init repo=<name>` runs per repo (scout features use `harness_state dir=<repo>`); root-level workspace AGENTS.md / config / verifier tools; no git ops at the root.
 
+## Workspace-level init
+
+`/relay-init` at the root (`lib/wsinit.mjs`, `relay_init action=workspace_plan|preview|apply`): per-repo init runs via `repo=<name>`; the root gets `relay.config.json` (missing keys only; `workspace` is added only if absent, so a user-edited list is never changed and unlisted new repos are only reported) and a deterministic workspace `AGENTS.md` merged into a `relay:init` block (user text outside it is kept). Roles come from detection; links are `declared` (package deps, `file:` links) or `inferred` (sibling port or `../<repo>/` in source) and carry their evidence. Limits: heuristics can misclassify; scouts run sequentially; the root is not a git repo so nothing is committed there.
+
 ## Limits (honest)
 
 - Worktrees branch from each repo's committed HEAD; uncommitted changes in main checkouts are not included. Repo worktrees have no `node_modules` (same as single-repo mode).

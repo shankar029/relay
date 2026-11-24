@@ -19,6 +19,11 @@ Linux browser OS libraries (`npx playwright install-deps` needs sudo; reported a
 
 ## Workspace mode (non-git parent with child repos)
 
-- `relay_init action=preflight` reports `mode: workspace` and the repo map. `bootstrap_git`, `.gitignore` writes and commits at the workspace root are refused.
-- For each repo run the normal flow with `repo=<name>` (scout feature: `harness_state init worktree=false dir=<repo> slug=repo-init`, then `relay_init repo=<name>` for preview/apply/baseline/commit). Scouts run sequentially: one orchestrator holds one active feature.
-- At the root: a short workspace `AGENTS.md` (repo map, inter-repo dependencies, cross-repo conventions; draft at `.ai/repo-init/agents-draft.md`, then `relay_init action=apply items=[agents-md]`), a `relay.config.json` (per-repo checks as `checks: {"<repo>": {build, test}}`, optional `workspace: {repos, exclude}`), and verifier tooling installed once (`install_verifier`, at `<root>/.relay/tools`).
+Run `/relay-init` in the parent folder; the same command initialises everything. `relay_init action=workspace_plan` lists each repo's init status (AGENTS.md block, verifier tools, prior init) and any child repos that are not in `relay.config.json` `workspace.repos` (those are never touched unless the user adds them). `bootstrap_git`, `.gitignore` writes and commits at the root are refused.
+
+1. **Per repo** (sequentially; one orchestrator holds one active feature): `harness_state init worktree=false dir=<repo> slug=repo-init`, run `relay-repo-scout`, then `relay_init repo=<name>` for preview, apply, install_verifier (first repo with a browser UI is enough; tools live at the root `.relay/tools`), baseline, commit. With `--refresh`, repeat for every repo; unchanged files produce no prompt.
+2. **At the root**, after the repos: `relay_init action=preview` then `apply items=[config, agents-md]`.
+   - `relay.config.json`: adds only missing keys (`workspace.repos`, `workspace.exclude`, per-repo `checks`, `requiredChecks`, `autonomy`, `budget`); an existing key is never changed.
+   - Workspace `AGENTS.md`: generated deterministically (`lib/wsinit.mjs`) from detection, not from an LLM: repo map with roles, declared and inferred inter-repo links with their evidence, per-repo commands (marked not executed at the root), suggested change order. Merged into a marked `relay:init` block; text outside it is kept; the user approves a diff first.
+3. Finish with `report`. Per-repo reports live in each repo's `.ai/repo-init/`.
+
