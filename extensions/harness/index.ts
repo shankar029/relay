@@ -37,6 +37,8 @@ import { WatchView } from "./watch.ts";
 // @ts-ignore plain ESM helper
 import * as I_ from "../../lib/init.mjs";
 import * as WI from "../../lib/wsinit.mjs";
+// @ts-ignore plain ESM helper
+import * as PR from "../../lib/prs.mjs";
 const I: any = I_;
 // @ts-ignore plain ESM helper
 import { runtimeDir, readJobs, writeJobs, upsertJob, reconcileJobs, applyEvent, buildSnapshot, renderTop, renderBottom, discoverFeatures, readLogLines } from "../../lib/status.mjs";
@@ -203,7 +205,7 @@ export default function (pi: ExtensionAPI) {
     name: "harness_state",
     label: "Harness state",
     description:
-      "Read/modify .ai/<slug>/state.json safely (atomic, schema-validated). Actions: init, open, get, set_phase (content-gated; 'done' is refused), pr_draft (text=summary, name=title, symptom=caveats one per line; writes pr.md), finalize (phase pr -> secret scan, commit .ai/<slug>, done; never pushes), step, counter, approval (only 'pending'), slice, checks, question, answer, artifact, lesson_add, lessons_for, unlock.",
+      "Read/modify .ai/<slug>/state.json safely (atomic, schema-validated). Actions: init, open, get, set_phase (content-gated; 'done' is refused), pr_draft (text=summary, name=title, symptom=caveats one per line; writes pr.md), finalize (phase pr -> secret scan, commit .ai/<slug>, done; does not push: use relay_pr after it), step, counter, approval (only 'pending'), slice, checks, question, answer, artifact, lesson_add, lessons_for, unlock.",
     promptSnippet: "Change Relay run state (never edit state.json by hand)",
     parameters: Type.Object({
       action: StringEnum(["init", "open", "get", "set_phase", "pr_draft", "finalize", "step", "counter", "approval", "slice", "checks", "question", "answer", "artifact", "lesson_add", "lessons_for", "unlock", "merge_research", "review_lenses", "consolidate_review"] as const),
@@ -441,9 +443,9 @@ export default function (pi: ExtensionAPI) {
           if (fst.workspace) {
             const sums = WS.repoSummaries(cwd, fst.workspace);
             const dirty = sums.filter((s: any) => s.dirty.length).map((s: any) => `${s.name} (${s.dirty.length} uncommitted)`);
-            return text(`done. Workspace feature: artefacts committed in the container (${String(c.commit).slice(0, 8)}); repo branches: ${sums.map((s: any) => `${s.name}=${s.branch} (${s.commits.length} commits)`).join(", ")}. Nothing pushed. PR texts: ${featureDir()}/pr.md and pr-<repo>.md.${dirty.length ? ` WARNING uncommitted changes in: ${dirty.join(", ")}.` : ""}`);
+            return text(`done. Workspace feature: artefacts committed in the container (${String(c.commit).slice(0, 8)}); repo branches: ${sums.map((s: any) => `${s.name}=${s.branch} (${s.commits.length} commits)`).join(", ")}. Nothing pushed yet. PR texts: ${featureDir()}/pr.md and pr-<repo>.md. Next: relay_pr plan, then relay_pr open (asks the user; disabled by pr.auto=false).${dirty.length ? ` WARNING uncommitted changes in: ${dirty.join(", ")}.` : ""}`);
           }
-          return text(`done. Artefacts committed (${String(c.commit).slice(0, 8)}) on branch ${readJson(stateFile(cwd)).worktree?.branch ?? "(in place)"}. Nothing pushed. PR text: ${featureDir()}/pr.md (contains the gh pr create command).`);
+          return text(`done. Artefacts committed (${String(c.commit).slice(0, 8)}) on branch ${readJson(stateFile(cwd)).worktree?.branch ?? "(in place)"}. Nothing pushed yet. PR text: ${featureDir()}/pr.md. Next: relay_pr plan, then relay_pr open (asks the user; disabled by pr.auto=false).`);
         }
         return text(String(out));
       } catch (e: any) {
@@ -637,6 +639,40 @@ export default function (pi: ExtensionAPI) {
   });
   if (!IS_CHILD) initTool();
 
+  if (!IS_CHILD) pi.registerTool({
+    name: "relay_pr",
+    label: "Open PRs",
+    description: "Final step after finalize (phase done): push relay/<slug> and open one PR per affected repo with gh, bodies from pr.md / pr-<repo>.md, sibling PRs cross-linked, URLs recorded in state.prs. Actions: plan (read-only summary), open (asks the user to confirm first, regardless of autonomy; needs an interactive UI). Never forces, never pushes any branch except relay/<slug>, idempotent on resume. Disabled by relay.config.json pr.auto=false.",
+    parameters: Type.Object({ action: StringEnum(["plan", "open"] as const) }),
+    async execute(_id: string, p: any, _s: any, _u: any, ctx: any) {
+      if (!slug) return text("error: no active feature (use harness_state open)");
+      const cwd = rootOf(ctx);
+      try {
+        const st = readJson(stateFile(cwd));
+        if (st.phase !== "done") return text(`error: relay_pr runs after finalize (phase is ${st.phase})`);
+        const cfg = (PR.prConfig as any)(configOf(cwd));
+        if (!cfg.auto) return text("PR creation is disabled (relay.config.json pr.auto=false). Use pr.md / pr-<repo>.md to open PRs manually.");
+        const sums = st.workspace ? WS.repoSummaries(cwd, st.workspace) : null;
+        const targets = (PR.prTargets as any)(st, path.join(cwd, featureDir()), sums);
+        if (!targets.length) return text("nothing to open: no repo has commits on its feature branch");
+        const plan = (PR.planPrs as any)({ targets, slug, existing: st.prs || {} });
+        const summary = (PR.renderPlan as any)(plan);
+        if (p.action === "plan") return text(summary);
+        const blocked = plan.filter((x: any) => x.problems.length && !x.existing);
+        if (!ctx.hasUI) return text(`error: opening PRs needs an interactive confirmation; PR text is in ${featureDir()}/pr*.md. Plan:\n${summary}`);
+        if (!(await ctx.ui.confirm("Push branches and open PRs?", `${summary}\n\nOnly relay/${slug} is pushed (no force). One PR per repo via gh.${blocked.length ? "\nRepos with problems will be skipped and reported." : ""}`))) return text("declined by the user; nothing pushed. PR text left in pr*.md");
+        const title = (fs.readFileSync(path.join(cwd, featureDir(), "pr.md"), "utf8").match(/^# (.+)$/m)?.[1] ?? slug).replace(/\s*\(.*\)$/, "");
+        const res = (PR.openPrs as any)({ targets, slug, title, existing: st.prs || {}, draft: cfg.draft });
+        withState(cwd, (s: any) => {
+          s.prs = s.prs || {};
+          for (const r of res) if (r.url) s.prs[r.name || "_"] = { url: r.url, branch: r.branch, at: new Date().toISOString() };
+        });
+        const c = (commitArtefacts as any)(cwd, featureDir(), `relay: ${slug} record PR URLs`);
+        const lines = res.map((r: any) => `- ${r.name || "repo"}: ${r.status}${r.url ? " " + r.url : ""}${r.error ? " (" + r.error + ")" : ""}${r.linkWarning ? " [" + r.linkWarning + "]" : ""}`);
+        return text(`${lines.join("\n")}\nPR URLs recorded in state.prs${c.ok ? "" : " (artefact commit failed: " + c.error + ")"}. Failed repos keep their pr text in ${featureDir()}/pr*.md; fix the cause and run relay_pr open again (existing PRs are reused).`);
+      } catch (e: any) { return text(`error: ${e.message}`); }
+    },
+  });
   pi.registerTool({
     name: "relay_approval",
     label: "User approval",
@@ -881,6 +917,7 @@ export default function (pi: ExtensionAPI) {
           t.agent === "relay-architect" ? `## plan.json must validate against this JSON Schema exactly (no extra properties; slice ids kebab-case; contracts are objects {name,pinned,location}; slice.contracts are strings; slices need dependsOn; every slice that changes code lists its test file(s) in slice.tests; slices in the SAME wave of order must have completely disjoint files.own (if two slices touch the same file, put them in separate waves, one slice per wave, in dependency order) and a wave with 2+ slices requires independence.parallelizable=true, otherwise use one slice per wave; top-level needs contracts, slices, order (array of arrays of slice ids), independence)\n\`\`\`json\n${JSON.stringify(schema("plan"))}\n\`\`\`` : "",
           t.agent === "relay-reviewer" && t.lane ? `## Review lens: ${t.lane}\nReview ONLY through this lens. Checklist: ${(LENS_CHECKLISTS as any)[t.lane] || "apply the lens named above"}.\nWrite ${featureDir()}/reports/review-${t.lane}.json (JSON only, no markdown) validating against this schema with lens="${t.lane}". Every finding needs a citation "path:line" (e.g. src/app.js:42) or it is dropped. severity blocker/major = must fix before PR; minor = advisory. Use an empty findings array if clean.\n\`\`\`json\n${JSON.stringify(schema("review-lens"))}\n\`\`\`` : "",
           t.agent === "relay-researcher" && t.lane ? `## Research topic: ${t.lane}\nCover ONLY this topic; other researchers cover the rest in parallel. Write ${featureDir()}/research-${t.lane}.md. Every claim cites path:line.` : "",
+          t.agent === "relay-verifier" && wsNames && Object.keys(readJson(stateFile(cwd)).workspace?.repos || {}).length > 1 ? `## Cross-repo verification (required)\nThis feature changes ${Object.keys(readJson(stateFile(cwd)).workspace.repos).join(" + ")}. Besides per-repo checks, run at least one scenario end to end ACROSS the repos: start the producing service from its worktree (${Object.keys(readJson(stateFile(cwd)).workspace.repos).join(", ")} are directories in your cwd; producers before consumers, ephemeral or free ports, never a port already in use), then drive the consuming repo's real client/UI against it over real HTTP/IPC. Use each repo's run command from its AGENTS.md (a worktree has no node_modules: install into a sandbox or reuse the main checkout's, and record it in toolsInstalled). Always stop what you started. Save the evidence as evidence/xrepo-<scenario>.json (or .png/.log) including each repo's HEAD sha, the command lines, ports and the raw request/response. If the services cannot be run together, mark those scenarios blocked with the reason; do not substitute mocks and call it cross-repo.` : "",
           wsNames ? `## Workspace (multi-repo) feature\nYour working directory is the feature container; each repo is a git worktree directory inside it: ${wsNames.join(", ")} (only repos the plan touches exist there). Every path is repo-qualified, e.g. ${wsNames[0]}/src/x.js. Main checkouts (read-only reference for research/design) are at ${wsMark.root}${path.sep}<repo>. Implementors: change files ONLY inside your slice's repo dir and commit inside that repo dir (git -C <repo> ...). Never commit at the container root.` : "",
           `Feature dir: ${featureDir()}${t.slice ? `\nSlice: ${t.slice}` : ""}${t.lane ? `\nLane: ${t.lane}` : ""}`,
         ].filter(Boolean).join("\n\n");
@@ -966,8 +1003,8 @@ export default function (pi: ExtensionAPI) {
         }
         prev[i] = r.output;
         const missNote = absent.length ? `\nMISSING REQUIRED OUTPUTS: ${absent.join(", ")}. Re-run this worker; do not proceed.` : "";
-        const revNote = reverted.length ? `\nHARNESS REVERTED out-of-ownership changes: ${[...new Set(reverted)].join(", ")}` : "";
-        return `### ${t.agent}${t.slice ? ` (${t.slice})` : ""} exit=${r.exitCode}${ok ? "" : " FAILED"}\n${r.output || r.stderr.slice(-800)}${missNote}${revNote}`;
+        const xrepoNote = (t.agent === "relay-verifier" && wsNames && Object.keys(readJson(stateFile(cwd)).workspace?.repos || {}).length > 1 && !(fs.existsSync(path.join(wcwd, featureDir(), "evidence")) && fs.readdirSync(path.join(wcwd, featureDir(), "evidence")).some((n: string) => /^xrepo-/.test(n)))) ? `\nNO CROSS-REPO EVIDENCE: no evidence/xrepo-* file. Re-run the verifier with an explicit cross-repo scenario, or accept it only with a recorded blocked reason.` : "";        const revNote = reverted.length ? `\nHARNESS REVERTED out-of-ownership changes: ${[...new Set(reverted)].join(", ")}` : "";
+        return `### ${t.agent}${t.slice ? ` (${t.slice})` : ""} exit=${r.exitCode}${ok ? "" : " FAILED"}\n${r.output || r.stderr.slice(-800)}${missNote}${revNote}${xrepoNote}`;
       };
 
       // Parallel implementors each get their own worktree (sub-branch of the feature branch).

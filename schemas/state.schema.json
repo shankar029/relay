@@ -28,6 +28,7 @@
         "repos": { "type": "object", "additionalProperties": { "type": "object", "required": ["path", "branch"], "additionalProperties": false, "properties": { "path": { "type": "string" }, "branch": { "type": "string" }, "base": { "type": "string" }, "baseSha": { "type": "string" } } } }
       }
     },
+    "prs": { "type": "object", "description": "PRs opened by relay_pr, keyed by repo name (\"_\" for single-repo)", "additionalProperties": { "type": "object", "required": ["url"], "properties": { "url": { "type": "string" }, "branch": { "type": "string" }, "at": { "type": "string" } } } },
     "phase": { "enum": ["baseline", "requirement", "research", "spec", "spec-approval", "design", "design-review", "design-approval", "implement", "verify", "review", "pr", "done"] },
     "createdAt": { "type": "string" },
     "updatedAt": { "type": "string" },

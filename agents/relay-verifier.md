@@ -16,6 +16,7 @@ spec.md, features.json, research.md, plan.json, AGENTS.md (paths in the brief). 
 - CLI: run the commands, save output.
 - Library: throwaway script under `verify-tools/` that imports and exercises it.
 - Data/jobs: run on sample data, then inspect results.
+- Multi-repo feature (brief has a "Cross-repo verification" section): at least one scenario must run the repos together (producer service first, then the consumer against it, real network calls, ports you picked that are free, everything stopped afterwards). Evidence goes to `evidence/xrepo-<scenario>.*` with each repo's HEAD, command lines and raw request/response. Cannot run together: mark `blocked` with the reason; mocks do not count as cross-repo.
 
 ## Tool discovery (in order)
 1. AGENTS.md / research.md notes. 2. Already-installed tools / MCP. 3. Install into a sandbox (`verify-tools/` or a temp dir). Never modify the repo's package.json or lockfiles. Record every install in the report's `toolsInstalled`. Global installs need user approval: report `blocked` instead of installing globally.

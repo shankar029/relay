@@ -50,7 +50,7 @@ Asking one AI agent to "build this feature" works for small things. For anything
 | **Evidence-gated passes** | Only the verifier can set a feature to `passes`, and a pass needs non-empty evidence files on disk. The orchestrator and implementors have no such tool. | `relay_set_passes` in `extensions/harness/index.ts`, `lib/gates.mjs`, `test/gates.test.mjs` |
 | **Hidden holdout tests** | The spec-writer authors extra scenarios in `holdout/`; implementors and reviewers cannot read them. The verifier scores them; failures go back as one-line symptoms only. | `checkRead` in `lib/policy.mjs`, `lib/holdout.mjs`, `test/holdout.test.mjs` |
 | **Disjoint file ownership, reverted if violated** | Parallel slices own disjoint files. Writes outside a slice's ownership are reverted after the worker finishes (bash included). | `enforceOwnership` in `lib/gitflow.mjs`, `checkPlan` in `lib/plan.mjs`, `test/gitflow.test.mjs` |
-| **Human gates; no push, no PR** | You approve the spec and design (`relay_approval`). Relay commits artefacts locally and writes `pr.md`; it has no push or PR tool. | `relay_approval` in `extensions/harness/index.ts`, `lib/autonomy.mjs`, `lib/worktree.mjs` |
+| **Human gates; push/PR only after you confirm** | You approve the spec and design (`relay_approval`). Relay commits artefacts locally and writes `pr.md`. Pushing and opening PRs is a separate final tool (`relay_pr`) that always asks you first, pushes only `relay/<slug>` (never force, never the default branch) and can be turned off with `pr.auto=false`. | `relay_approval`, `relay_pr` in `extensions/harness/index.ts`, `lib/prs.mjs`, `test/prs.test.mjs` |
 | **Resumable on-disk state, per-feature worktrees** | State, artefacts and lock live in `.ai/<slug>/` inside a dedicated worktree and branch. A killed run resumes; interrupted workers are re-run. | `lib/state.mjs`, `lib/worktree.mjs`, `test/recovery.test.mjs`, `skills/relay/references/resume.md` |
 | **Specialists in separate processes** | Each worker is a fresh pi process with a limited tool set and role guards. | `extensions/harness/run.ts`, `agents/*.md` |
 | **Live stepper and worker UI** | A stage stepper and per-worker panel driven from on-disk status, plus a read-only live worker viewer (`alt+w`). | `lib/status.mjs`, `extensions/harness/watch.ts`, `test/status.test.mjs` |
@@ -98,10 +98,10 @@ flowchart LR
   A2 --> I[Implement slices<br/>parallel where independent]
   I --> V[Verify<br/>evidence + holdout score]
   V --> RV[Review<br/>parallel lenses]
-  RV --> PR[pr.md + commit<br/>no push]
+  RV --> PR[pr.md + commit<br/>relay_pr after confirm]
 ```
 
-Relay never pushes and never opens a PR. It prepares `pr.md`; you push and run `gh pr create`.
+Relay prepares `pr.md`, then (only after you confirm in `relay_pr`) pushes `relay/<slug>` and opens the PR with `gh`.
 
 ## Architecture
 
@@ -236,7 +236,7 @@ If you start Relay in a directory that is **not** a git repo but has child git r
 - **Lazy per-repo worktrees.** Only repos the plan touches get a worktree `<container>/<repo>` on branch `relay/<slug>`; your main checkouts are never written.
 - **Slices carry a `repo`.** Ownership, test gate, checks (`<repo>:test`), merges and the status UI's `[repo]` tag are per repo. A slice covers one repo; cross-repo contracts and ordering go in the design.
 - **Config.** `relay.config.json` may set `workspace.repos` / `workspace.exclude` and per-repo `checks` (`{"api": {"test": "npm test"}}`).
-- **Finish.** One `pr-<repo>.md` per repo plus a feature-level `pr.md`, cross-linked. Relay never pushes or opens PRs.
+- **Finish.** One `pr-<repo>.md` per repo plus a feature-level `pr.md`, cross-linked. `relay_pr` then pushes each repo's `relay/<slug>` and opens one PR per repo (after your confirmation), cross-linking the siblings.
 - **Init at the parent folder.** `/relay-init` in the workspace root: `relay_init action=workspace_plan` shows each repo's init status; the orchestrator runs the normal per-repo init (repo scout, verifier tooling, `.gitignore`, baseline, commit) for each repo via `repo=<name>`, then writes the root `relay.config.json` (adds only missing keys: `workspace.repos`, `workspace.exclude`, per-repo `checks`, `requiredChecks`, `autonomy`, `budget`; never overwrites yours) and a workspace `AGENTS.md` (repo map, roles, inter-repo links with evidence, per-repo commands, suggested change order) in a marked block after you approve a diff. Child repos not listed in `workspace.repos` are reported, never touched. `--refresh` re-runs it. Logic: `lib/wsinit.mjs`.
 
 **Verified vs not.** Unit tests: `test/workspace.test.mjs`. Live (real pi TUI, Windows, `gpt-6.1-sol` for orchestrator and workers, approvals simulated by pressing Enter) on a two-repo workspace (node API + client) with one cross-repo feature: lazy worktrees, `repo`-tagged slices, kill -9 during implementation followed by `--resume` (interrupted slice re-run, both repo worktrees re-attached), review, verify, and `pr*.md` all completed; main checkouts stayed untouched; I re-ran both repos' tests in the worktrees (16/16, 10/10). The run exposed a bug (review gate could not be satisfied for repo-qualified checks), fixed and re-verified by resuming the same feature. Workspace-level init: the root steps (workspace_plan, config, workspace AGENTS.md) were run live in a pi TUI on a copy of the two-repo sample (approvals simulated with Enter) and wrote the expected files; the per-repo scouts of a workspace init, `--refresh` at the root and a 3+ repo workspace were not run live (unit-tested: `test/wsinit.test.mjs`). Roles and links are heuristics from manifests/ports/paths (the sample's API was classified as a library and no link was found), so review the generated AGENTS.md. Not verified: macOS/Linux, parallel slices across repos live (unit-tested only), the Copilot guard/installer in containers (cwd-based, not adapted), dirty main checkouts (not included in worktree bases), `node_modules` in repo worktrees (not copied), slices spanning several repos.
@@ -254,17 +254,17 @@ If you start Relay in a directory that is **not** a git repo but has child git r
 
 With no slug it lists `relay/*` worktrees. Relay re-attaches to the worktree, checks artefact hashes and re-runs interrupted steps (details: `skills/relay/references/resume.md`). Worktree re-attach is unit-tested; a full kill-and-resume of a real run has **not** been done live.
 
-**Finish: push and open the PR yourself.**
+**Finish: open the PR(s).** After `finalize`, the orchestrator calls `relay_pr plan` and `relay_pr open`. `open` shows one line per repo (branch, head, remote, diff size) and asks you to confirm; it needs an interactive UI and runs regardless of autonomy.
 
-```bash
-cd <repo>.relay-worktrees/<slug>
-git log --oneline
-cat .ai/<slug>/pr.md                 # PR text and caveats
-git push -u origin relay/<slug>
-gh pr create --title "<title>" --body-file .ai/<slug>/pr.md
-```
+- Pushes only `relay/<slug>` (`git push -u origin relay/<slug>:relay/<slug>`, never `--force`, refuses any other branch name).
+- One PR per repo via `gh pr create`, body from `pr.md` (single repo) or `pr-<repo>.md`; sibling PRs are cross-linked by editing each body once all exist.
+- URLs are recorded in `state.json` under `prs`. Re-running is idempotent: a recorded PR, or an open PR for the head branch, is reused.
+- No `gh`, no `origin` remote, or a push failure: that repo is reported and its `pr*.md` is left for you; other repos continue.
+- Disable with `relay.config.json`: `{"pr": {"auto": false}}` (draft PRs: `"draft": true`).
 
-Relay never runs these. The `gh pr create` step is **untested** here: no real PR has been opened from a Relay branch. Read the diff before you push. The holdout directory is never committed. Clean up with `git worktree remove <path>`.
+Manual fallback: `git push -u origin relay/<slug>` then `gh pr create --body-file .ai/<slug>/pr.md`.
+
+Verified: the push/create/cross-link/idempotency path ran against two real throwaway GitHub repos (see `test/prs.test.mjs` for the mocked-`gh` unit tests). **Not** verified: the interactive `relay_pr` confirmation inside a full pi run (the logic was driven directly), GitHub Enterprise, protected-branch rules or required-reviewer setups, fork workflows. The holdout directory is never committed. Clean up with `git worktree remove <path>`.
 
 ## Concepts and glossary
 
@@ -350,7 +350,7 @@ This is what worked here, not a guarantee elsewhere. Never commit tokens.
 The harness enforces these in `extensions/harness/` and `lib/`. How far each one has been proven is in [Status and known limitations](#status-and-known-limitations); a guard being listed here does **not** mean it was exercised live.
 
 - **One worktree per feature.** Branch `relay/<slug>` in `<repo>.relay-worktrees/<slug>`.
-- **Write guards.** A role can only write its allowed files. `state.json`, `AGENTS.md`, `README.md`, `.env` and `.git` are protected. `git push` is blocked. Only implementors may commit.
+- **Write guards.** A role can only write its allowed files. `state.json`, `AGENTS.md`, `README.md`, `.env` and `.git` are protected. Agents cannot run `git push` (blocked in bash); only the harness's `relay_pr` pushes, and only `relay/<slug>`. Only implementors may commit.
 - **Ownership revert.** After a child run, the harness diffs against the pre-run HEAD and reverts out-of-ownership changes, including ones made through `bash`.
 - **Bash path confinement.** A pattern-based block on bash writes outside the worktree. Heuristic: it can be bypassed.
 - **Holdouts.** Read guards block every role except the verifier and spec-writer, including bash commands that mention the directory. The orchestrator is told never to read or quote them. Obfuscated reads (for example string-built paths) are not reliably caught.
@@ -385,7 +385,7 @@ git branch --list "relay/<slug>--*"      # delete leftover slice branches too, i
 
 ## FAQ
 
-**Does Relay push or open a PR?** No. It commits to `relay/<slug>` and writes `pr.md`.
+**Does Relay push or open a PR?** Only as the last step, after you confirm: `relay_pr` pushes `relay/<slug>` (no force, never the default branch) and runs `gh pr create`. Set `"pr": {"auto": false}` in `relay.config.json` to keep it to `pr.md`.
 
 **Does it change my working copy?** No. Work happens in a separate worktree. It does need to read your repo and `git worktree add` a new one.
 
@@ -446,7 +446,7 @@ Relay has been run live in pi several times against small sample Node APIs, with
 - **Unit-tested only, or checked outside a real model run:** the ownership revert and the test-gate retry through a real child agent; obfuscated holdout-read variants; the 2-round lens cap refusal; budget caps; autonomy levels; required `sast`/`lint` checks; the Windows `node_modules` junction; spec lessons; the digital-twin design gate; worktree re-attach on resume.
 - **Not exercised in every run:** parallel researcher lanes and parallel slices depend on the orchestrator's and architect's choices. Run 14 used one researcher and two dependent (sequential) slices.
 - **Approvals in the live runs were simulated** with `--simulate-approvals`. The stdin approval mode exists but a human-in-the-loop run has not been done end to end.
-- **Not tested at all:** pushing and opening a PR from a Relay branch. Resuming a killed real run is now verified (see Live status).
+- **Pushing and opening PRs:** the `relay_pr` logic is verified against real throwaway GitHub repos and mocked-`gh` unit tests; the interactive confirmation inside a full pi run, GitHub Enterprise, protected branches and forks are untested. Resuming a killed real run is now verified (see Live status).
 - The bash write guards and the holdout read guard are **pattern based** and can be obfuscated around (for example `python -c "open('../x','w')"`). The ownership revert is the backstop for writes inside the repo. Reads of ignored or untracked paths are not policed.
 - Evidence comes from a few small sample repos and one platform (Windows). Results elsewhere are unknown. Token use and duration vary between runs.
 

@@ -107,7 +107,7 @@ test("per-repo checks and staleness", () => {
   assert.match(W.checkStaleness(c.path, st, ["api"], ["test"])[0], /api:test.*stale/);
 });
 
-test("per-repo PR text is cross-linked; never pushes", () => {
+test("per-repo PR text is cross-linked", () => {
   const root = mkWs();
   const c = W.ensureContainer(root, "feat", ["api", "web"]);
   for (const r of ["api", "web"]) W.ensureRepoWorktree(root, c.path, "feat", r);
@@ -118,7 +118,7 @@ test("per-repo PR text is cross-linked; never pushes", () => {
   assert.equal(sums.find((s) => s.name === "web").commits.length, 0);
   const md = W.renderRepoPr({ slug: "feat", title: "T", summary: "S", repo: "api", summaries: sums, root });
   assert.match(md, /web: <PR URL>/);
-  assert.match(md, /not run by Relay/);
+  assert.match(md, /Create the PR manually/);
   assert.match(W.multiRepoCreateSection(sums, ".ai/feat"), /pr-api\.md/);
 });
 

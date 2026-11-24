@@ -41,7 +41,7 @@ Behaviour:
 - **Ownership**: per-repo head snapshot before a worker runs; out-of-ownership writes in any repo are reverted (`enforceOwnershipRepos`). The test gate runs on repo-qualified changed paths.
 - **Checks**: `relay_checks` runs each repo's checks (config `checks` flat or `{repo: {...}}`, else package.json scripts) in its worktree; results keyed `<repo>:<check>` with that repo's HEAD; staleness is per repo.
 - **Research/design/verify**: workers read main checkouts at `<root>/<repo>` (read-only) and the container worktrees; verification evidence goes to `.ai/<slug>/evidence/`.
-- **Finish**: `pr_draft` writes `pr.md` plus `pr-<repo>.md` (cross-linked); `finalize` warns about uncommitted changes in repos. Relay never pushes or opens PRs.
+- **Finish**: `pr_draft` writes `pr.md` plus `pr-<repo>.md` (cross-linked); `finalize` warns about uncommitted changes in repos. `relay_pr` (after finalize and your confirmation) pushes each repo's `relay/<slug>` and opens one cross-linked PR per repo; PR URLs go to `state.prs`; `pr.auto=false` disables it.
 - **Status UI**: slices show `[repo]`; container features are discovered from `.relay-features/*`.
 - **Resume / pause / crash**: container is re-attached by slug; interrupted workers' partial writes are stashed in every repo worktree; merged-slice commits are verified per repo; the lock lives in the container.
 - **Init**: `relay_init repo=<name>` runs per repo (scout features use `harness_state dir=<repo>`); root-level workspace AGENTS.md / config / verifier tools; no git ops at the root.
