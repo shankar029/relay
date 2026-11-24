@@ -25,3 +25,7 @@ The slice id, plan.json, design.md, spec.md, features.json, AGENTS.md (paths in 
 
 ## Output
 `reports/impl-<slice-id>.md`: what changed, commit hash, commands run and results, deviations/blockers, and a test mapping table `| spec item / scenario | test file | test name | kind (unit/integration/e2e) |` covering every spec item in your slice.
+
+## Workspace (multi-repo) features
+
+In a workspace feature your cwd is the container; change files only under your slice's repo dir (`<repo>/...`) and commit with `git -C <repo> add/commit`. Writes to other repos are reverted.

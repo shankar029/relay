@@ -16,3 +16,9 @@ Re-run the same steps with `--refresh`: detection and the scout run again, `appl
 
 ## Not done automatically
 Linux browser OS libraries (`npx playwright install-deps` needs sudo; reported as a note), installing gitleaks/semgrep (reported as missing; `relay_secret_scan` is the fallback), starting docker services, editing git hooks or CI.
+
+## Workspace mode (non-git parent with child repos)
+
+- `relay_init action=preflight` reports `mode: workspace` and the repo map. `bootstrap_git`, `.gitignore` writes and commits at the workspace root are refused.
+- For each repo run the normal flow with `repo=<name>` (scout feature: `harness_state init worktree=false dir=<repo> slug=repo-init`, then `relay_init repo=<name>` for preview/apply/baseline/commit). Scouts run sequentially: one orchestrator holds one active feature.
+- At the root: a short workspace `AGENTS.md` (repo map, inter-repo dependencies, cross-repo conventions; draft at `.ai/repo-init/agents-draft.md`, then `relay_init action=apply items=[agents-md]`), a `relay.config.json` (per-repo checks as `checks: {"<repo>": {build, test}}`, optional `workspace: {repos, exclude}`), and verifier tooling installed once (`install_verifier`, at `<root>/.relay/tools`).
