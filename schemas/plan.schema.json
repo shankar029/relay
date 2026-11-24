@@ -19,6 +19,7 @@
         }
       }
     },
+    "repos": { "type": "array", "items": { "type": "string" }, "description": "workspace (multi-repo) plans: repos touched by the slices" },
     "slices": { "type": "array", "minItems": 1, "items": { "$ref": "#/definitions/slice" } },
     "order": { "type": "array", "minItems": 1, "items": { "type": "array", "minItems": 1, "items": { "type": "string" } } },
     "independence": {
@@ -35,6 +36,7 @@
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$" },
+        "repo": { "type": "string", "description": "workspace plans: the single repo this slice changes; files.own/tests globs are then prefixed with it" },
         "title": { "type": "string" },
         "features": { "type": "array", "items": { "type": "string" } },
         "files": {

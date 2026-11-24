@@ -12,6 +12,8 @@ import { checkWrite, bashConfinementProblem, checkRead, matchesAny, requiredOutp
 import * as S_ from "../../lib/state.mjs";
 // @ts-ignore
 import { checkPlan } from "../../lib/plan.mjs";
+import * as WS from "../../lib/workspace.mjs";
+import { readMarker } from "../../lib/workspace.mjs";
 // @ts-ignore
 import { lessonsFor, addLesson } from "../../lib/lessons.mjs";
 // @ts-ignore
@@ -55,8 +57,9 @@ const text = (t: string, details: unknown = {}) => ({ content: [{ type: "text" a
 const posix = (p: string) => p.split(path.sep).join("/");
 const gateSchemas = () => ({ features: schema("features"), plan: schema("plan"), holdout: schema("holdout"), holdoutResults: schema("holdout-results") });
 // relay.config.json "satisfactionThreshold" (0..1): minimum holdout pass fraction to enter review. Default 1 (all must pass).
+const cfgBases = (cwd: string): string[] => { const m = readMarker(cwd); return m?.root ? [cwd, m.root, RELAY_HOME] : [cwd, RELAY_HOME]; };
 const satThreshold = (cwd: string): number => {
-  for (const base of [cwd, RELAY_HOME]) {
+  for (const base of cfgBases(cwd)) {
     const f = path.join(base, "relay.config.json");
     if (fs.existsSync(f)) { try { const v = readJson(f).satisfactionThreshold; return typeof v === "number" ? v : 1; } catch { return 1; } }
   }
@@ -65,7 +68,7 @@ const satThreshold = (cwd: string): number => {
 
 // relay.config.json "requiredChecks": checks that must have run green on the current HEAD before review (default: test).
 const requiredChecks = (cwd: string): string[] => {
-  for (const base of [cwd, RELAY_HOME]) {
+  for (const base of cfgBases(cwd)) {
     const f = path.join(base, "relay.config.json");
     if (fs.existsSync(f)) { try { const v = readJson(f).requiredChecks; return Array.isArray(v) ? v.map(String) : ["test"]; } catch { return ["test"]; } }
   }
@@ -74,7 +77,7 @@ const requiredChecks = (cwd: string): string[] => {
 const headOf = (cwd: string): string | null => { try { return execFileSync("git", ["rev-parse", "HEAD"], { cwd, encoding: "utf8" }).trim(); } catch { return null; } };
 
 const budgetOf = (cwd: string): any => {
-  for (const base of [cwd, RELAY_HOME]) {
+  for (const base of cfgBases(cwd)) {
     const f = path.join(base, "relay.config.json");
     if (fs.existsSync(f)) { try { return readJson(f).budget || {}; } catch { return {}; } }
   }
@@ -82,11 +85,18 @@ const budgetOf = (cwd: string): any => {
 };
 
 const configOf = (cwd: string): any => {
-  for (const base of [cwd, RELAY_HOME]) {
+  for (const base of cfgBases(cwd)) {
     const f = path.join(base, "relay.config.json");
     if (fs.existsSync(f)) { try { return readJson(f); } catch { return {}; } }
   }
   return {};
+};
+
+// Required checks + staleness: per repo (keys "<repo>:<check>", each against its own HEAD) in workspace features.
+const checkGate = (cwd: string, st: any) => {
+  const repos = Object.keys(st.workspace?.repos || {});
+  if (!repos.length) return { required: requiredChecks(cwd), head: headOf(cwd), extra: [] as string[] };
+  return { required: WS.requiredWorkspaceChecks(repos, requiredChecks(cwd)), head: null, extra: WS.checkStaleness(cwd, st, repos, requiredChecks(cwd)) as string[] };
 };
 
 const IS_CHILD = process.env.RELAY_CHILD === "1";
@@ -214,9 +224,10 @@ export default function (pi: ExtensionAPI) {
       takeover: Type.Optional(Type.Boolean()),
       worktree: Type.Optional(Type.Boolean({ description: "init/open: default true = run the feature in its own git worktree (branch relay/<slug>); false = in place" })),
       base: Type.Optional(Type.String({ description: "init: base ref for the new worktree branch (default HEAD)" })),
+      dir: Type.Optional(Type.String({ description: "workspace mode: run an in-place (worktree=false) feature inside this child repo directory (used by /relay-init per-repo scouts)" })),
     }),
     async execute(_id: string, p: any, _s: any, _u: any, ctx: any) {
-      const repoCwd = ctx.cwd || process.cwd();
+      const repoCwd = p.dir ? path.resolve(ctx.cwd || process.cwd(), p.dir) : ctx.cwd || process.cwd();
       let cwd = rootOf(ctx);
       const lock = () => path.join(cwd, featureDir(), ".lock");
       try {
@@ -224,7 +235,19 @@ export default function (pi: ExtensionAPI) {
           if (!p.slug || !/^[a-z0-9]+(-[a-z0-9]+)*$/.test(p.slug)) return text("error: slug must be kebab-case");
           if (!p.requirement) return text("error: requirement required");
           let wt: any;
-          if (p.worktree !== false) {
+          let wsInit: any;
+          const wsd = (WS.detectWorkspace as any)(repoCwd, configOf(repoCwd));
+          if (wsd.mode === "workspace" && p.worktree !== false) {
+            try {
+              const c = WS.ensureContainer(wsd.root, p.slug, wsd.repos.map((r: any) => r.name));
+              wt = { path: c.path, branch: c.branch, base: "HEAD", created: c.created };
+              wsInit = { root: wsd.root, repos: {} };
+              const empty = wsd.repos.filter((r: any) => !r.hasCommit).map((r: any) => r.name);
+              if (empty.length) return text(`error: repo(s) without a commit: ${empty.join(", ")}. Make an initial commit or exclude them via relay.config.json workspace.exclude.`);
+            } catch (e: any) { return text(`error: cannot create workspace feature container: ${e.message}`); }
+          } else if (wsd.mode === "none" && p.worktree !== false) {
+            return text("error: this directory is neither a git repo nor a workspace containing git repos (child dirs with .git).");
+          } else if (p.worktree !== false) {
             try { wt = ensureWorktree(repoCwd, p.slug, { base: p.base }); }
             catch (e: any) { return text(`error: cannot create worktree (use worktree=false to run in place): ${e.message}`); }
             excludeHarnessFiles(wt.path);
@@ -238,9 +261,12 @@ export default function (pi: ExtensionAPI) {
           const lk = S.acquireLock(lock());
           if (!lk.ok) { slug = undefined; root = undefined; return text("error: lock held"); }
           const worktree = wt ? { path: wt.path, branch: wt.branch, base: wt.base, ...(wt.baseSha ? { baseSha: wt.baseSha } : {}) } : undefined;
-          S.saveState(stateFile(cwd), S.newState({ slug, requirement: p.requirement, worktree }), schema("state"));
+          const ns: any = S.newState({ slug, requirement: p.requirement, worktree });
+          if (wsInit) ns.workspace = wsInit;
+          S.saveState(stateFile(cwd), ns, schema("state"));
           const lessons = path.join(cwd, ".ai", "lessons.md");
           if (!fs.existsSync(lessons)) fs.copyFileSync(path.join(RELAY_HOME, "templates", "lessons.md"), lessons);
+          if (wsInit) return text(`initialised workspace feature ${featureDir()} in container ${wt.path} (branch ${wt.branch}, ${wt.created ? "created" : "re-attached"}). Workspace root ${wsInit.root}; repos: ${wsd.repos.map((r: any) => r.name).join(", ")}. Repo worktrees are created lazily for the repos the plan touches, as <container>/<repo>. Use absolute paths under the container for every feature file; reference repos by name (<repo>/path). Main checkouts at ${wsInit.root}\<repo> are read-only reference.`);
           return text(wt
             ? `initialised ${featureDir()} in worktree ${wt.path} (branch ${wt.branch}, ${wt.created ? "created" : "re-attached"}). ALL work happens there: use absolute paths under ${wt.path} for every write/read of feature files.`
             : `initialised ${featureDir()} in place (no worktree) at ${cwd}`);
@@ -248,7 +274,13 @@ export default function (pi: ExtensionAPI) {
         if (p.action === "open") {
           slug = p.slug;
           if (!slug) return text("error: slug required");
-          const found = p.worktree === false ? undefined : (() => { try { return findWorktree(repoCwd, slug); } catch { return undefined; } })();
+          const found = p.worktree === false ? undefined : (() => {
+            try {
+              const wc = WS.containerPath(path.resolve(repoCwd), slug);
+              if (!(WS.isGitRepo as any)(repoCwd) && fs.existsSync(path.join(wc, ".git"))) return { path: wc, branch: branchFor(slug) };
+              return findWorktree(repoCwd, slug);
+            } catch { return undefined; }
+          })();
           cwd = found ? found.path : repoCwd;
           if (!fs.existsSync(stateFile(cwd))) { slug = undefined; return text(`error: no .ai/${p.slug}/state.json in ${cwd}${found ? "" : ` (no worktree on branch ${branchFor(p.slug)} found)`}`); }
           root = cwd;
@@ -264,6 +296,8 @@ export default function (pi: ExtensionAPI) {
           if (report.interrupted.length) {
             // a killed worker may have left partial writes in the feature worktree; park them so the re-run starts clean
             try { if ((stashPartialWork as any)(cwd, `${slug} ${report.interrupted.join(",")}`)) report.stashedPartialWork = true; } catch { /* best effort */ }
+            const wmk = readMarker(cwd);
+            if (wmk?.repos) try { const sr = WS.stashPartialRepos(cwd, wmk.repos, `${slug} ${report.interrupted.join(",")}`); if (sr.length) { report.stashedPartialWork = true; report.stashedRepos = sr; } } catch { /* best effort */ }
           }
           delete state.paused;
           pausedNow = false;
@@ -271,10 +305,12 @@ export default function (pi: ExtensionAPI) {
           if (report.interrupted.length) report.note = "interrupted steps/slices must be RE-RUN (their partial output was discarded; counters and finished work are kept)";
           for (const [id, s] of Object.entries<any>(state.slices)) {
             if (s.status !== "merged" || !s.commit) continue;
-            try { git(cwd, "merge-base", "--is-ancestor", s.commit, "HEAD"); } catch { report.missingCommits.push(id); }
+            try { git(s.repo ? path.join(cwd, s.repo) : cwd, "merge-base", "--is-ancestor", s.commit, "HEAD"); } catch { report.missingCommits.push(id); }
           }
           for (const [n, v] of Object.entries(state.approvals)) if (v === "pending") report.pendingApprovals.push(n);
           try { report.dirty = git(cwd, "status", "--porcelain").split("\n").filter(Boolean); } catch { report.dirty = ["(git unavailable)"]; }
+          for (const rn of Object.keys(state.workspace?.repos || {})) { try { report.dirty.push(...git(path.join(cwd, rn), "status", "--porcelain").split("\n").filter(Boolean).map((l: string) => `${rn}: ${l}`)); } catch { /* repo worktree missing */ } }
+          if (state.workspace) report.workspace = { root: state.workspace.root, repos: Object.keys(state.workspace.repos) };
           return text(JSON.stringify(report, null, 2), report);
         }
         if (!slug) return text("error: no active feature; call init or open first");
@@ -285,9 +321,11 @@ export default function (pi: ExtensionAPI) {
         }
         if (p.action === "review_lenses") {
           let cfg: any = {};
-          for (const b of [cwd, RELAY_HOME]) { const f = path.join(b, "relay.config.json"); if (fs.existsSync(f)) { try { cfg = readJson(f); } catch { /* ignore */ } break; } }
+          for (const b of cfgBases(cwd)) { const f = path.join(b, "relay.config.json"); if (fs.existsSync(f)) { try { cfg = readJson(f); } catch { /* ignore */ } break; } }
           const st0 = readJson(stateFile(cwd));
-          const changed = (reviewChangedFiles as any)(cwd, st0.worktree?.base, defaultBranch(cwd));
+          const changed: string[] = st0.workspace
+            ? Object.entries<any>(st0.workspace.repos).flatMap(([rn, ri]) => ((reviewChangedFiles as any)(path.join(cwd, rn), ri.baseSha || ri.base, defaultBranch(path.join(cwd, rn))) as string[]).map((f) => `${rn}/${f}`))
+            : (reviewChangedFiles as any)(cwd, st0.worktree?.base, defaultBranch(cwd));
           return text(JSON.stringify({ lenses: (reviewLenses as any)(cfg, changed), maxRounds: 2 }));
         }
         if (p.action === "consolidate_review") {
@@ -321,14 +359,15 @@ export default function (pi: ExtensionAPI) {
                 const miss = phaseRequires(p.phase, featureDir()).filter((f: string) => !fs.existsSync(path.join(cwd, f)));
                 if (miss.length) throw new Error(`cannot enter ${p.phase}: missing ${miss.join(", ")}. Re-run the producing worker.`);
                 try { (recordLessons as any)(cwd, readJson(path.join(cwd, featureDir(), "holdout", "results.json"))); } catch { /* no results yet */ }
-                const probs = (phaseProblems as any)({ lessons: (loadLessons as any)(cwd), phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: requiredChecks(cwd), head: headOf(cwd) });
+                const probs = (phaseProblems as any)({ lessons: (loadLessons as any)(cwd), phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: checkGate(cwd, st).required, head: checkGate(cwd, st).head });
+                probs.push(...checkGate(cwd, st).extra);
                 if (probs.length) throw new Error(`cannot enter ${p.phase}:\n- ${probs.join("\n- ")}`);
               }
               st.phase = p.phase; return `phase=${p.phase}`;
             case "pr_draft": {
               if (!p.text) throw new Error("text (PR summary) required; caveats go in 'caveats'");
               const fe = readJson(path.join(cwd, featureDir(), "features.json"));
-              const probs = (phaseProblems as any)({ phase: "pr", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: requiredChecks(cwd), head: null });
+              const probs = (phaseProblems as any)({ phase: "pr", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: checkGate(cwd, st).required, head: null });
               if (probs.length) throw new Error(`cannot draft PR:\n- ${probs.join("\n- ")}`);
               const ev = path.join(cwd, featureDir(), "evidence");
               const checkLogs = fs.existsSync(ev) ? fs.readdirSync(ev).filter((n) => /^checks-.*\.log$/.test(n)).sort() : [];
@@ -339,18 +378,26 @@ export default function (pi: ExtensionAPI) {
               const base = st.worktree?.base && st.worktree.base !== "HEAD" ? st.worktree.base : defaultBranch(cwd);
               const branch = st.worktree?.branch || git(cwd, "rev-parse", "--abbrev-ref", "HEAD");
               let commits: string[] = [], diffStat = "";
-              try { commits = git(cwd, "log", "--oneline", `${base}..HEAD`).split("\n").filter(Boolean); diffStat = git(cwd, "diff", "--stat", `${base}...HEAD`); } catch { /* base unknown */ }
+              const wsSums = st.workspace ? WS.repoSummaries(cwd, st.workspace) : null;
+              if (wsSums) { commits = wsSums.flatMap((s: any) => s.commits.map((c: string) => `[${s.name}] ${c}`)); diffStat = wsSums.map((s: any) => `# ${s.name}\n${s.diffStat}`).join("\n"); }
+              else try { commits = git(cwd, "log", "--oneline", `${base}..HEAD`).split("\n").filter(Boolean); diffStat = git(cwd, "diff", "--stat", `${base}...HEAD`); } catch { /* base unknown */ }
               const rv = fs.readFileSync(path.join(cwd, featureDir(), "reports", "review.md"), "utf8");
               const reports = fs.readdirSync(path.join(cwd, featureDir(), "reports")).filter((n) => /^verify-.*\.json$/.test(n)).map((n) => `${featureDir()}/reports/${n}`);
               let sat: any = null;
               try { sat = (holdoutResultProblems as any)(cwd, featureDir(), gateSchemas(), 0).sat; } catch { /* no holdouts */ }
               const md = (renderPr as any)({ satisfaction: sat, slug, title: p.name || slug, summary: p.text, caveats: p.symptom ? String(p.symptom).split("\n").filter(Boolean) : [], features: fe, featureDir: featureDir(), branch, base, checks, commits, diffStat, reviewExcerpt: rv.slice(0, 1500), verifyReports: reports });
+              if (wsSums) {
+                const md2 = md.replace(/## Create the PR[\s\S]*$/, WS.multiRepoCreateSection(wsSums, featureDir()) + "\n");
+                S.writeFileAtomic(path.join(cwd, featureDir(), "pr.md"), md2);
+                for (const s of wsSums) S.writeFileAtomic(path.join(cwd, featureDir(), `pr-${s.name}.md`), WS.renderRepoPr({ slug: slug!, title: p.name || slug!, summary: p.text, repo: s.name, summaries: wsSums, root: st.workspace.root }));
+                return `pr.md + ${wsSums.map((s: any) => `pr-${s.name}.md`).join(", ")} written. Next: harness_state action=finalize`;
+              }
               S.writeFileAtomic(path.join(cwd, featureDir(), "pr.md"), md);
               return `pr.md written (${md.length} chars). Next: harness_state action=finalize`;
             }
             case "finalize": {
               if (st.phase !== "pr") throw new Error(`finalize requires phase=pr (now ${st.phase})`);
-              const probs = (phaseProblems as any)({ phase: "done", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: requiredChecks(cwd), head: null });
+              const probs = (phaseProblems as any)({ phase: "done", cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: checkGate(cwd, st).required, head: null });
               if (probs.length) throw new Error(`cannot finalize:\n- ${probs.join("\n- ")}`);
               st.phase = "done";
               return "__finalize__";
@@ -389,6 +436,12 @@ export default function (pi: ExtensionAPI) {
             return text(`finalize refused: ${c.error}`);
           }
           S.releaseLock(lock());
+          const fst = readJson(stateFile(cwd));
+          if (fst.workspace) {
+            const sums = WS.repoSummaries(cwd, fst.workspace);
+            const dirty = sums.filter((s: any) => s.dirty.length).map((s: any) => `${s.name} (${s.dirty.length} uncommitted)`);
+            return text(`done. Workspace feature: artefacts committed in the container (${String(c.commit).slice(0, 8)}); repo branches: ${sums.map((s: any) => `${s.name}=${s.branch} (${s.commits.length} commits)`).join(", ")}. Nothing pushed. PR texts: ${featureDir()}/pr.md and pr-<repo>.md.${dirty.length ? ` WARNING uncommitted changes in: ${dirty.join(", ")}.` : ""}`);
+          }
           return text(`done. Artefacts committed (${String(c.commit).slice(0, 8)}) on branch ${readJson(stateFile(cwd)).worktree?.branch ?? "(in place)"}. Nothing pushed. PR text: ${featureDir()}/pr.md (contains the gh pr create command).`);
         }
         return text(String(out));
@@ -406,21 +459,34 @@ export default function (pi: ExtensionAPI) {
       action: StringEnum(["preflight", "bootstrap_git", "detect", "preview", "apply", "install_verifier", "baseline", "commit", "report"] as const),
       items: Type.Optional(Type.Array(Type.String())),
       refresh: Type.Optional(Type.Boolean()),
+      repo: Type.Optional(Type.String({ description: "workspace (multi-repo) mode: run the action inside this child repo; omit to act on the workspace root (repo map, workspace AGENTS.md/config, verifier tools)" })),
     }),
     async execute(_id: string, p: any, _s: any, _u: any, ctx: any) {
-      const cwd = ctx.cwd ?? process.cwd();
+      const base0 = ctx.cwd ?? process.cwd();
+      const wsd0: any = (WS.detectWorkspace as any)(base0, configOf(base0));
+      const wsMode = wsd0.mode === "workspace" && !p.repo;
+      if (p.repo && wsd0.mode === "workspace" && !wsd0.repos.some((r: any) => r.name === p.repo)) return text(`error: unknown repo ${p.repo} (workspace repos: ${wsd0.repos.map((r: any) => r.name).join(", ")})`);
+      const cwd = p.repo && wsd0.mode === "workspace" ? path.join(base0, p.repo) : base0;
       const dir = path.join(cwd, ".ai", I.INIT_SLUG);
       const rel = (f: string) => posix(path.relative(cwd, f));
       const ask = async (title: string, msg: string): Promise<boolean> => ctx.hasUI ? !!(await ctx.ui.confirm(title, msg)) : false;
       const stateP = path.join(dir, "init.json");
       const st: any = fs.existsSync(stateP) ? readJson(stateP) : { applied: [], skipped: [], written: [] };
       const save = () => { fs.mkdirSync(dir, { recursive: true }); fs.writeFileSync(stateP, JSON.stringify(st, null, 2)); };
-      const detection = () => I.detect(cwd);
+      const detection = () => {
+        if (!wsMode) return I.detect(cwd);
+        // workspace root: repos with a UI decide verifier tooling; checks are per repo (use repo=<name>)
+        const per = wsd0.repos.map((r: any) => ({ name: r.name, d: I.detect(r.path) }));
+        return { ...(per.find((x: any) => x.d.ui?.length || x.d.ui === true)?.d || per[0].d), perRepo: Object.fromEntries(per.map((x: any) => [x.name, { stacks: x.d.stacks, apps: x.d.apps, checks: x.d.checks, ui: x.d.ui }])) };
+      };
       const readIf = (f: string) => (fs.existsSync(f) ? fs.readFileSync(f, "utf8") : "");
       try {
         switch (p.action) {
-          case "preflight": return text(JSON.stringify(I.preflight(cwd), null, 2));
+          case "preflight":
+            if (wsMode) return text(JSON.stringify({ mode: "workspace", root: cwd, note: "parent is not a git repo (expected). Init each repo with repo=<name>; Relay will not git-init or commit the workspace root.", repos: wsd0.repos }, null, 2));
+            return text(JSON.stringify(I.preflight(cwd), null, 2));
           case "bootstrap_git": {
+            if (wsMode) return text("refused: the workspace root is deliberately not a git repo. Use repo=<name> for child repos.");
             const pf = I.preflight(cwd);
             if (pf.isRepo && pf.commits > 0) return text("already a git repo with commits; nothing to do");
             if (!(await ask("Initialise git?", `${pf.isRepo ? "This repo has no commits." : "This folder is not a git repo."} Relay needs a repo with at least one commit. Run 'git init -b main' and make an initial commit of the current files?`))) return text("declined; /relay-init cannot continue without a git repo with a commit");
@@ -454,7 +520,7 @@ export default function (pi: ExtensionAPI) {
           }
           case "apply": {
             const d = detection();
-            const want: string[] = p.items?.length ? p.items : ["agents-md", "gitignore", "config"];
+            const want: string[] = (p.items?.length ? p.items : ["agents-md", "gitignore", "config"]).filter((i: string) => !(wsMode && i === "gitignore"));
             const out: string[] = [];
             for (const item of want) {
               if (item === "agents-md") {
@@ -519,6 +585,7 @@ export default function (pi: ExtensionAPI) {
             return text(ok ? `installed; smoke screenshot ${rel(png)} (${fs.statSync(png).size} bytes)\n${plan.notes.join("\n")}` : `smoke test FAILED\n${maskText(`${sm.stdout}\n${sm.stderr}`).slice(-1500)}\n${plan.notes.join("\n")}`);
           }
           case "baseline": {
+            if (wsMode) return text("run baseline per repo: relay_init action=baseline repo=<name>");
             const d = detection();
             let cfg: any = {}; try { cfg = readJson(path.join(cwd, "relay.config.json")); } catch { /* none */ }
             const checks = { ...d.checks, ...(cfg.checks || {}) };
@@ -530,6 +597,7 @@ export default function (pi: ExtensionAPI) {
             return text(Object.entries(st.baseline).map(([k, v]: any) => `${k}: ${v.status}${v.evidence ? ` [${v.evidence}]` : ""}`).join("\n"));
           }
           case "commit": {
+            if (wsMode) return text("nothing to commit: the workspace root is not a git repo (its files stay local). Commit per repo with repo=<name>.");
             const files = [...new Set<string>(st.written)].filter((f) => fs.existsSync(path.join(cwd, f)));
             if (!files.length) return text("nothing written by init; nothing to commit");
             if (!(await ask("Commit init files?", `Commit (no push): ${files.join(", ")}`))) return text("declined");
@@ -582,6 +650,32 @@ export default function (pi: ExtensionAPI) {
     async execute(_id: string, p: any, _s: any, _u: any, ctx: any) {
       if (!slug) return text("error: no active feature");
       const cwd = rootOf(ctx);
+      const wsRepos = Object.keys(readJson(stateFile(cwd)).workspace?.repos || {});
+      if (wsRepos.length) {
+        // workspace feature: run each repo's checks in its own worktree; results are keyed "<repo>:<check>" with that repo's HEAD
+        const rows: string[] = [];
+        const results: Record<string, any> = {};
+        let allOk = true; const missing: string[] = [];
+        for (const repo of wsRepos) {
+          const rdir = path.join(cwd, repo);
+          const cmds = WS.repoChecks(rdir, repo, configOf(cwd).checks) as Record<string, string>;
+          for (const name of requiredChecks(cwd)) if (!cmds[name]) missing.push(`${repo}:${name}`);
+          for (const name of ["build", "typecheck", "lint", "sast", "test"]) {
+            if (!cmds[name] || (p.only && !p.only.includes(name))) continue;
+            const r = spawnSync(cmds[name], { cwd: rdir, shell: true, encoding: "utf8", timeout: 10 * 60_000 });
+            const ok = r.status === 0;
+            allOk = allOk && ok;
+            results[`${repo}:${name}`] = { ok, at: new Date().toISOString(), head: headOf(rdir) };
+            const log = maskText(`# RESULT: ${ok ? "PASS" : "FAIL"}\n$ ${cmds[name]}\n${r.stdout}\n${r.stderr}`);
+            const logRel = `${featureDir()}/evidence/checks-${repo}-${name}-${Date.now()}.log`;
+            S.writeFileAtomic(path.join(cwd, logRel), log.slice(-20000));
+            rows.push(`${ok ? "PASS" : "FAIL"} ${repo}:${name} (${logRel})${ok ? "" : "\n" + log.slice(-1500)}`);
+          }
+        }
+        if (Object.keys(results).length) withState(cwd, (st: any) => { st.checkResults = { ...st.checkResults, ...results }; return "check results saved"; });
+        const verdict = rows.length && !allOk ? "RED" : missing.length || !rows.length ? `NOT GREEN: required check(s) not configured: ${missing.join(", ") || "none ran"}. Configure relay.config.json checks (flat, or per repo: {"<repo>": {build,test,...}})` : "ALL GREEN";
+        return text(`${verdict}\n${rows.join("\n")}`);
+      }
       let checks = (readJson(stateFile(cwd)).checks || {}) as Record<string, string>;
       if (!Object.keys(checks).length && configOf(cwd).checks && typeof configOf(cwd).checks === "object") {
         checks = configOf(cwd).checks; // written by /relay-init
@@ -668,6 +762,15 @@ export default function (pi: ExtensionAPI) {
       if (!slug) return text("error: no active feature; call harness_state init/open first");
       uiCtx = ctx;
       const cwd = rootOf(ctx);
+      const wsMark = readMarker(cwd);
+      const wsNames: string[] | null = wsMark?.repos?.length ? wsMark.repos : null;
+      // lazily create the repo's feature worktree inside the container and record it in state.workspace
+      const attachRepo = (c: string, repo: string) => {
+        if (!wsNames!.includes(repo)) throw new Error(`unknown repo "${repo}" (workspace repos: ${wsNames!.join(", ")})`);
+        const known = readJson(stateFile(c)).workspace?.repos?.[repo];
+        const wt = WS.ensureRepoWorktree(wsMark.root, c, slug!, repo, { base: known?.base && known.base !== "HEAD" ? known.base : undefined, repoPath: known?.path });
+        if (!known) withState(c, (st: any) => { st.workspace = st.workspace || { root: wsMark.root, repos: {} }; st.workspace.repos[repo] = { path: path.join(wsMark.root, repo), branch: wt.branch, base: wt.base, ...(wt.baseSha ? { baseSha: wt.baseSha } : {}) }; return "repo attached"; });
+      };
       const wantBg = (p.background ?? configOf(cwd).background ?? false) && ctx.hasUI && !onStarted;
       if (wantBg) {
         const hasImpl = p.tasks.some((t: any) => t.agent === "relay-implementor");
@@ -709,8 +812,12 @@ export default function (pi: ExtensionAPI) {
       if (needPlan) {
         if (!fs.existsSync(planPath)) return text("error: plan.json missing");
         plan = readJson(planPath);
-        const errs = [...validate(schema("plan"), plan), ...(validate(schema("plan"), plan).length ? [] : checkPlan(plan))];
+        const errs = [...validate(schema("plan"), plan), ...(validate(schema("plan"), plan).length ? [] : [...checkPlan(plan), ...(wsNames ? WS.checkWorkspacePlan(plan, wsNames) : [])])];
         if (errs.length) return text(`error: plan.json invalid:\n${errs.join("\n")}`);
+      }
+      if (wsNames && fs.existsSync(planPath)) {
+        // reviewers/verifiers/fixers must see every repo the plan touches
+        try { for (const r of readJson(planPath).repos || []) attachRepo(cwd, r); } catch (e: any) { return text(`error: ${e.message}`); }
       }
       if (p.mode === "parallel" && p.tasks.filter((t: any) => t.agent === "relay-implementor").length) {
         const slices = p.tasks.map((t: any) => t.slice);
@@ -759,6 +866,7 @@ export default function (pi: ExtensionAPI) {
           t.agent === "relay-architect" ? `## plan.json must validate against this JSON Schema exactly (no extra properties; slice ids kebab-case; contracts are objects {name,pinned,location}; slice.contracts are strings; slices need dependsOn; every slice that changes code lists its test file(s) in slice.tests; slices in the SAME wave of order must have completely disjoint files.own (if two slices touch the same file, put them in separate waves, one slice per wave, in dependency order) and a wave with 2+ slices requires independence.parallelizable=true, otherwise use one slice per wave; top-level needs contracts, slices, order (array of arrays of slice ids), independence)\n\`\`\`json\n${JSON.stringify(schema("plan"))}\n\`\`\`` : "",
           t.agent === "relay-reviewer" && t.lane ? `## Review lens: ${t.lane}\nReview ONLY through this lens. Checklist: ${(LENS_CHECKLISTS as any)[t.lane] || "apply the lens named above"}.\nWrite ${featureDir()}/reports/review-${t.lane}.json (JSON only, no markdown) validating against this schema with lens="${t.lane}". Every finding needs a citation "path:line" (e.g. src/app.js:42) or it is dropped. severity blocker/major = must fix before PR; minor = advisory. Use an empty findings array if clean.\n\`\`\`json\n${JSON.stringify(schema("review-lens"))}\n\`\`\`` : "",
           t.agent === "relay-researcher" && t.lane ? `## Research topic: ${t.lane}\nCover ONLY this topic; other researchers cover the rest in parallel. Write ${featureDir()}/research-${t.lane}.md. Every claim cites path:line.` : "",
+          wsNames ? `## Workspace (multi-repo) feature\nYour working directory is the feature container; each repo is a git worktree directory inside it: ${wsNames.join(", ")} (only repos the plan touches exist there). Every path is repo-qualified, e.g. ${wsNames[0]}/src/x.js. Main checkouts (read-only reference for research/design) are at ${wsMark.root}${path.sep}<repo>. Implementors: change files ONLY inside your slice's repo dir and commit inside that repo dir (git -C <repo> ...). Never commit at the container root.` : "",
           `Feature dir: ${featureDir()}${t.slice ? `\nSlice: ${t.slice}` : ""}${t.lane ? `\nLane: ${t.lane}` : ""}`,
         ].filter(Boolean).join("\n\n");
         if (t.step) withState(cwd, (st: any) => S.beginStep(st, t.step, { agent: t.agent, inputs: b.inputs }));
@@ -769,18 +877,22 @@ export default function (pi: ExtensionAPI) {
             const pl = JSON.parse(fs.readFileSync(path.join(cwd, featureDir(), "plan.json"), "utf8"));
             const e = validate(schema("plan"), pl);
             if (e.length) return e;
-            const cp = checkPlan(pl);
+            const cp = [...checkPlan(pl), ...(wsNames ? WS.checkWorkspacePlan(pl, wsNames) : [])];
             if (cp.length) return cp;
             return pl.slices.flatMap((s: any) => testGate([...s.files.own, ...(s.tests || [])]).map(() => `slice ${s.id}: owns code but lists no test file; add its test file(s) (e.g. test/<name>.test.js) to slice.tests`));
           } catch (e: any) { return [`plan.json unreadable: ${e.message}`]; }
         };
+        if (wsNames && t.agent === "relay-implementor" && !t.__wt) {
+          try { attachRepo(cwd, plan.slices.find((s: any) => s.id === t.slice).repo); } catch (e: any) { return `error: ${e.message}`; }
+        }
         const wcwd: string = t.__wt || cwd;
         const taskHead = safe(() => git(wcwd, "rev-parse", "HEAD"));
+        const taskHeads: Record<string, string> = wsNames ? WS.snapshotHeads(wcwd, wsNames) : {};
         const reverted: string[] = [];
         const allowedFile = (f: string) => f.startsWith(".ai/") || matchesAny(ownedGlobs, f);
         const testProblems = () => {
           if (t.agent !== "relay-implementor") return [] as string[];
-          const ch = changedSince(wcwd, taskHead);
+          const ch = wsNames ? WS.changedSinceRepos(wcwd, taskHeads) : changedSince(wcwd, taskHead);
           return testGate([...ch].filter((f: string) => matchesAny(ownedGlobs, f)));
         };
         const scoutProblemsFn = () => {
@@ -790,7 +902,8 @@ export default function (pi: ExtensionAPI) {
           return I.scoutProblems({ report, draft: fs.readFileSync(path.join(wcwd, featureDir(), "agents-draft.md"), "utf8"), cwd: wcwd }) as string[];
         };
         const problems = () => {
-          if (taskHead) reverted.push(...(enforceOwnership as any)(wcwd, taskHead, allowedFile).reverted);
+          if (wsNames) reverted.push(...WS.enforceOwnershipRepos(wcwd, taskHeads, allowedFile));
+          else if (taskHead) reverted.push(...(enforceOwnership as any)(wcwd, taskHead, allowedFile).reverted);
           return [
             ...testProblems(),
             ...required.filter((f) => !fs.existsSync(path.join(wcwd, f))).map((f) => `missing output ${f}`),
@@ -824,9 +937,11 @@ export default function (pi: ExtensionAPI) {
           return `### ${t.agent}${t.slice ? ` (${t.slice})` : ""} CANCELLED (interrupted; re-run it)`;
         }
         if (t.agent === "relay-implementor") {
-          (commitSliceLeftovers as any)(wcwd, t.slice, featureDir());
+          const srepo: string | undefined = wsNames ? plan.slices.find((s: any) => s.id === t.slice).repo : undefined;
+          if (wsNames) (WS.commitSliceLeftoversWs as any)(wcwd, t.slice, srepo, featureDir());
+          else (commitSliceLeftovers as any)(wcwd, t.slice, featureDir());
           okSlices[t.slice] = ok;
-          if (!t.__wt) withState(cwd, (st: any) => { st.slices[t.slice] = ok ? { status: "merged", commit: safe(() => git(cwd, "rev-parse", "HEAD")) } : { status: "failed" }; });
+          if (!t.__wt) withState(cwd, (st: any) => { st.slices[t.slice] = ok ? { status: "merged", commit: safe(() => git(srepo ? path.join(cwd, srepo) : cwd, "rev-parse", "HEAD")), ...(srepo ? { repo: srepo } : {}) } : { status: "failed", ...(srepo ? { repo: srepo } : {}) }; });
         }
         if (t.step) {
           const outs = Array.from(new Set([...(t.outputs || []), ...required]));
@@ -847,7 +962,11 @@ export default function (pi: ExtensionAPI) {
         const cp = (commitArtefacts as any)(cwd, featureDir(), `relay: checkpoint ${slug} artefacts before parallel slices`);
         if (!cp.ok) return text(`error: cannot checkpoint artefacts for slice worktrees: ${cp.error}`);
         for (const t of p.tasks) {
-          try { t.__wt = (addSliceWorktree as any)(cwd, slug, t.slice).path; }
+          try {
+            const srepo = wsNames ? plan.slices.find((s: any) => s.id === t.slice).repo : undefined;
+            if (srepo) attachRepo(cwd, srepo);
+            t.__wt = srepo ? WS.addSliceWorktreeWs(cwd, slug!, t.slice, srepo).path : (addSliceWorktree as any)(cwd, slug, t.slice).path;
+          }
           catch (e: any) { return text(`error: cannot create worktree for slice ${t.slice}: ${e.message}`); }
           withState(cwd, (st: any) => { st.slices[t.slice] = { status: "running", worktree: t.__wt }; });
         }
@@ -860,9 +979,13 @@ export default function (pi: ExtensionAPI) {
 
       if (useSliceWt) {
         const order: string[] = plan.order.flat().filter((s: string) => p.tasks.some((t: any) => t.slice === s && okSlices[s]));
-        const { merged, conflicts } = (mergeSlices as any)(cwd, slug, order);
+        const repoOf = (s: string) => plan.slices.find((x: any) => x.id === s)?.repo;
+        const { merged, conflicts } = wsNames
+          ? WS.mergeSlicesWs(cwd, slug!, order.map((s) => ({ slice: s, repo: repoOf(s) })))
+          : (mergeSlices as any)(cwd, slug, order);
         for (const m of merged) {
-          withState(cwd, (st: any) => { st.slices[m.slice] = { status: "merged", commit: m.commit }; });
+          withState(cwd, (st: any) => { st.slices[m.slice] = { status: "merged", commit: m.commit, ...(wsNames ? { repo: repoOf(m.slice) } : {}) }; });
+          if (wsNames) WS.removeSliceWorktreeWs(cwd, slug!, m.slice, repoOf(m.slice), { deleteBranch: true });
           (removeSliceWorktree as any)(cwd, slug, m.slice, { deleteBranch: true });
         }
         for (const c of conflicts) withState(cwd, (st: any) => { st.slices[c.slice] = { status: "failed", worktree: p.tasks.find((t: any) => t.slice === c.slice)?.__wt }; });
@@ -945,7 +1068,8 @@ export default function (pi: ExtensionAPI) {
     uiCtx = ctx;
     if (!ctx.hasUI) return;
     try {
-      const roots = (listWorktrees(ctx.cwd) as any[]).map((w) => w.path);
+      let roots: string[];
+      try { roots = (listWorktrees(ctx.cwd) as any[]).map((w) => w.path); } catch { roots = [ctx.cwd]; } // non-git workspace parent
       const open = (discoverFeatures(roots) as any[]).find((f) => f.phase !== "done");
       if (open) view = { slug: open.slug, root: open.root };
     } catch { /* not a git repo */ }
