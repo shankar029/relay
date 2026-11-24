@@ -43,11 +43,17 @@ export function loadAgents(): AgentDef[] {
 // Optional relay.config.json: { "tiers": { "strong": "provider/model", "mid": "...", "cheap": "..." } }
 export function modelForTier(cwd: string, tier?: string): string | undefined {
   if (!tier) return undefined;
-  for (const base of [cwd, RELAY_HOME]) {
+  // First config that actually defines the tier wins: a per-repo relay.config.json (e.g. the stub /relay-init writes)
+  // must not hide the tiers set in the workspace parent's config.
+  const parent = path.dirname(cwd);
+  for (const base of [cwd, parent, RELAY_HOME]) {
     const f = path.join(base, "relay.config.json");
-    if (fs.existsSync(f)) {
-      try { return JSON.parse(fs.readFileSync(f, "utf8")).tiers?.[tier]; } catch { return undefined; }
-    }
+    if (!fs.existsSync(f)) continue;
+    try {
+      const c = JSON.parse(fs.readFileSync(f, "utf8"));
+      if (base === parent && !c.workspace) continue;
+      if (c.tiers?.[tier]) return c.tiers[tier];
+    } catch { /* unreadable config: try the next */ }
   }
   return undefined;
 }

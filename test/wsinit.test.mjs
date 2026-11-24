@@ -84,3 +84,18 @@ test("excluded repos are not listed or detected", () => {
     assert.equal(WI.repoInitStatus(repos[0]).agentsMd, false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+test("source scan infers an HTTP service and its client link from shared routes", () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), "relay-wsinit-"));
+  repo(root, "svc", { "package.json": JSON.stringify({ name: "svc", scripts: { test: "node --test" } }), "src/server.js": 'import http from "node:http";\nexport const createServer = () => http.createServer((q, s) => { if (q.url.startsWith("/items")) s.end("[]"); });\n' });
+  repo(root, "cli", { "package.json": JSON.stringify({ name: "cli", scripts: { test: "node --test" } }), "src/client.js": "export const list = (b) => fetch(`${b}/items`);\n" });
+  try {
+    const repos = W.listRepos(root, {});
+    const d = dets(root, repos);
+    assert.match(WI.roleOf(d.svc, path.join(root, "svc")), /service \/ API/);
+    assert.match(WI.roleOf(d.cli, path.join(root, "cli")), /HTTP client/);
+    const rels = WI.relations(repos, d);
+    const l = rels.find((r) => r.from === "cli" && r.to === "svc");
+    assert.ok(l && l.kind === "inferred" && /\/items/.test(l.evidence));
+    assert.ok(!rels.some((r) => r.from === "svc" && r.to === "cli"));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});

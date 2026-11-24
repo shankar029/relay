@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.2
+
+- `relay_pr`: after finalize and your confirmation, pushes only `relay/<slug>` (never force) and opens one PR per affected repo via `gh`, cross-linked, URLs recorded in `state.prs`, idempotent on resume; `pr.auto=false` or missing gh/remote leaves `pr.md`. Verified live on throwaway GitHub repos (not through the full TUI confirm).
+- Cross-repo verification: verifier brief requires producer-then-consumer real-HTTP runs with `evidence/xrepo-*`; `relay_subagent` flags missing cross-repo evidence.
+- Workspace init: infers service/client roles and `client -> server` links from source; tier lookup falls through a per-repo config without tiers to the workspace config (fixed `model_not_available` on `--refresh`).
 ## 0.3.1
 
 - Workspace-aware `/relay-init`: run at the parent folder to list repo init status (`workspace_plan`), init each repo, then write root `relay.config.json` (missing keys only: `workspace`, per-repo `checks`, ...) and a workspace `AGENTS.md` (repo map, roles, inter-repo links with evidence, commands, change order). Never overwrites user config; unlisted repos untouched.
