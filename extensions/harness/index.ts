@@ -655,6 +655,7 @@ export default function (pi: ExtensionAPI) {
         // workspace feature: run each repo's checks in its own worktree; results are keyed "<repo>:<check>" with that repo's HEAD
         const rows: string[] = [];
         const results: Record<string, any> = {};
+        const configured: Record<string, string> = {};
         let allOk = true; const missing: string[] = [];
         for (const repo of wsRepos) {
           const rdir = path.join(cwd, repo);
@@ -665,6 +666,7 @@ export default function (pi: ExtensionAPI) {
             const r = spawnSync(cmds[name], { cwd: rdir, shell: true, encoding: "utf8", timeout: 10 * 60_000 });
             const ok = r.status === 0;
             allOk = allOk && ok;
+            configured[`${repo}:${name}`] = cmds[name];
             results[`${repo}:${name}`] = { ok, at: new Date().toISOString(), head: headOf(rdir) };
             const log = maskText(`# RESULT: ${ok ? "PASS" : "FAIL"}\n$ ${cmds[name]}\n${r.stdout}\n${r.stderr}`);
             const logRel = `${featureDir()}/evidence/checks-${repo}-${name}-${Date.now()}.log`;
@@ -672,7 +674,7 @@ export default function (pi: ExtensionAPI) {
             rows.push(`${ok ? "PASS" : "FAIL"} ${repo}:${name} (${logRel})${ok ? "" : "\n" + log.slice(-1500)}`);
           }
         }
-        if (Object.keys(results).length) withState(cwd, (st: any) => { st.checkResults = { ...st.checkResults, ...results }; return "check results saved"; });
+        if (Object.keys(results).length) withState(cwd, (st: any) => {         st.checks = { ...st.checks, ...configured }; st.checkResults = { ...st.checkResults, ...results }; return "check results saved"; });
         const verdict = rows.length && !allOk ? "RED" : missing.length || !rows.length ? `NOT GREEN: required check(s) not configured: ${missing.join(", ") || "none ran"}. Configure relay.config.json checks (flat, or per repo: {"<repo>": {build,test,...}})` : "ALL GREEN";
         return text(`${verdict}\n${rows.join("\n")}`);
       }

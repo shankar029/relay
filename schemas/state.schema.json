@@ -37,7 +37,6 @@
     "artifacts": { "type": "object", "additionalProperties": { "$ref": "#/definitions/fileRef" } },
     "checks": {
       "type": "object",
-      "additionalProperties": false,
       "properties": {
         "build": { "type": "string" },
         "typecheck": { "type": "string" },
@@ -45,7 +44,8 @@
         "sast": { "type": "string" },
         "test": { "type": "string" },
         "init": { "type": "string" }
-      }
+      },
+      "additionalProperties": { "type": "string" }
     },
     "checkResults": {
       "type": "object",

@@ -135,3 +135,14 @@ test("status: repo tag on slices and container discovery", () => {
   const snap = buildSnapshot({ state: { phase: "implement", slices: {}, approvals: {} }, plan: { slices: [{ id: "s1", repo: "api" }] }, jobs: [] });
   assert.match(snap.children[0].label, /\[api\]/);
 });
+
+test("state schema accepts repo-qualified check commands", async () => {
+  const { validate } = await import("../lib/jsonschema.mjs");
+  const { newState } = await import("../lib/state.mjs");
+  const schema = JSON.parse(fs.readFileSync(new URL("../schemas/state.schema.json", import.meta.url), "utf8"));
+  const st = newState({ slug: "x", requirement: "r" });
+  st.checks = { "api:test": "npm test", "web:test": "npm test" };
+  assert.deepEqual(validate(schema, st), []);
+  st.checks = { "api:test": 1 };
+  assert.ok(validate(schema, st).length);
+});
