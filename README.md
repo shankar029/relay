@@ -13,7 +13,7 @@ It runs on the [pi coding agent](https://github.com/earendil-works/pi) today. Co
 5. [Architecture](#architecture)
 6. [Before you start: expectations (when to use / not)](#before-you-start-expectations)
 7. [Prerequisites and install](#prerequisites-and-install)
-8. [Repo init (/relay-init)](#repo-init-relay-init)
+8. [Repo init (/relay-init)](#repo-init-relay-init) · [Multi-repo workspaces](#multi-repo-workspaces)
 9. [Your first run](#your-first-run)
 10. [The steps, one by one](#the-steps-one-by-one)
 11. [Steering, resuming and finishing a run](#steering-resuming-and-finishing-a-run)
@@ -228,6 +228,18 @@ Re-running is idempotent: unchanged files produce no diff and no prompt.
 
 **Verified vs not.** Unit tests: `test/init.test.mjs` (preflight, detection, merge/diff, gitignore/config idempotence, scout gate, baseline, scout write policy). Live, real pi TUI on Windows with approvals simulated by pressing Enter on each dialog (so the human check was not exercised), on a browser-UI sample (todo web app, initially not a git repo): git bootstrap, scout run (about 6 min, passed the gate, evidence logs written), AGENTS.md/.gitignore/relay.config.json approvals, baseline and commit all worked. That run exposed a bug: the npm feed's latest Playwright tag pointed at an alpha whose playwright-core was missing (ETARGET); install_verifier now retries with the newest stable version (latestStable, unit-tested). After that fix, Playwright 1.65 plus Chromium and a screenshot were verified by hand in .relay/tools, but the full tool-driven install plus smoke step was not re-run end to end. A --refresh re-run reached the scout and failed with model_not_supported on the sample's default mid tier, so refresh idempotence was not verified live (pin 	iers.mid in relay.config.json); idempotence is covered by unit tests only. Not verified: an API-only repo live, macOS/Linux, the Copilot port of init, non-Node stacks beyond unit-level detection, Python/Go/Rust command discovery on real repos, docker compose and CI detection on real repos, `--refresh` on large repos.
 
+## Multi-repo workspaces
+
+If you start Relay in a directory that is **not** a git repo but has child git repos (the usual "parent folder with everything cloned" layout), it runs in workspace mode. Single-repo behaviour is unchanged. Design and limits: [docs/multi-repo.md](docs/multi-repo.md); code: `lib/workspace.mjs`.
+
+- **Per-feature container.** `<workspace>/.relay-features/<slug>/` is a tiny local-only git repo holding `.ai/<slug>/` (spec, design, plan, evidence, state). Agents run there, so every path is repo-qualified (`api/src/server.js`) and ownership globs, holdouts and guards work as before.
+- **Lazy per-repo worktrees.** Only repos the plan touches get a worktree `<container>/<repo>` on branch `relay/<slug>`; your main checkouts are never written.
+- **Slices carry a `repo`.** Ownership, test gate, checks (`<repo>:test`), merges and the status UI's `[repo]` tag are per repo. A slice covers one repo; cross-repo contracts and ordering go in the design.
+- **Config.** `relay.config.json` may set `workspace.repos` / `workspace.exclude` and per-repo `checks` (`{"api": {"test": "npm test"}}`).
+- **Finish.** One `pr-<repo>.md` per repo plus a feature-level `pr.md`, cross-linked. Relay never pushes or opens PRs.
+- `relay_init repo=<name>` initialises one repo at a time.
+
+**Verified vs not.** Unit tests: `test/workspace.test.mjs`. Live (real pi TUI, Windows, `gpt-6.1-sol` for orchestrator and workers, approvals simulated by pressing Enter) on a two-repo workspace (node API + client) with one cross-repo feature: lazy worktrees, `repo`-tagged slices, kill -9 during implementation followed by `--resume` (interrupted slice re-run, both repo worktrees re-attached), review, verify, and `pr*.md` all completed; main checkouts stayed untouched; I re-ran both repos' tests in the worktrees (16/16, 10/10). The run exposed a bug (review gate could not be satisfied for repo-qualified checks), fixed and re-verified by resuming the same feature. Not verified: macOS/Linux, workspace-level `/relay-init` and AGENTS.md, parallel slices across repos live (unit-tested only), the Copilot guard/installer in containers (cwd-based, not adapted), dirty main checkouts (not included in worktree bases), `node_modules` in repo worktrees (not copied), slices spanning several repos.
 ## Steering, resuming and finishing a run
 
 **Answer clarifying questions.** Reply in the pi chat. Relay records the question in `state.json` (`pendingQuestions`) and your answer in `decisions.md` so it survives a restart.
