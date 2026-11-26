@@ -28,6 +28,7 @@ import { holdoutAccessProblem, holdoutResultProblems } from "../../lib/holdout.m
 import { loadLessons, recordLessons } from "../../lib/speclessons.mjs";
 import { autonomyLevel, requiredApprovals } from "../../lib/autonomy.mjs";
 import { addUsage, budgetProblem } from "../../lib/budget.mjs";
+import * as DR from "../../lib/docreview.mjs";
 import { laneProblem, reviewLenses, mergeResearch, consolidateReview, reviewRerun, reviewChangedFiles, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
 // @ts-ignore
 import { stashPartialWork, enforceOwnership, quarantineStrays, commitArtefacts, addSliceWorktree, commitSliceLeftovers, mergeSlices, removeSliceWorktree, changedSince } from "../../lib/gitflow.mjs";
@@ -205,10 +206,10 @@ export default function (pi: ExtensionAPI) {
     name: "harness_state",
     label: "Harness state",
     description:
-      "Read/modify .ai/<slug>/state.json safely (atomic, schema-validated). Actions: init, open, get, set_phase (content-gated; 'done' is refused), pr_draft (text=summary, name=title, symptom=caveats one per line; writes pr.md), finalize (phase pr -> secret scan, commit .ai/<slug>, done; does not push: use relay_pr after it), step, counter, approval (only 'pending'), slice, checks, question, answer, artifact, lesson_add, lessons_for, unlock.",
+      "Read/modify .ai/<slug>/state.json safely (atomic, schema-validated). Actions: init, open, get, set_phase (content-gated; 'done' is refused), pr_draft (text=summary, name=title, symptom=caveats one per line; writes pr.md), finalize (phase pr -> secret scan, commit .ai/<slug>, done; does not push: use relay_pr after it), step, counter, approval (only 'pending'), slice, checks, question, answer, artifact, lesson_add, lessons_for, unlock, docreview_lenses (name=spec|design: lanes for relay-doc-reviewer), docreview_consolidate (name=doc; counts a round, cap docReview.maxRounds), docreview_resolve (name=doc, text=JSON [{id,action:fix|contest|escalate|decline,justification,evidence?}]), docreview_close (name=doc, status=accept|skip, text=reason).",
     promptSnippet: "Change Relay run state (never edit state.json by hand)",
     parameters: Type.Object({
-      action: StringEnum(["init", "open", "get", "set_phase", "pr_draft", "finalize", "step", "counter", "approval", "slice", "checks", "question", "answer", "artifact", "lesson_add", "lessons_for", "unlock", "merge_research", "review_lenses", "consolidate_review"] as const),
+      action: StringEnum(["init", "open", "get", "set_phase", "pr_draft", "finalize", "step", "counter", "approval", "slice", "checks", "question", "answer", "artifact", "lesson_add", "lessons_for", "unlock", "merge_research", "review_lenses", "consolidate_review", "docreview_lenses", "docreview_consolidate", "docreview_resolve", "docreview_close"] as const),
       slug: Type.Optional(Type.String()),
       requirement: Type.Optional(Type.String()),
       phase: Type.Optional(Type.String()),
@@ -338,6 +339,26 @@ export default function (pi: ExtensionAPI) {
           const r = (consolidateReview as any)(cwd, featureDir(), schema("review-lens"), want);
           return text(r.ok ? JSON.stringify(r) : `error: ${r.error}`);
         }
+        if (p.action.startsWith("docreview_")) {
+          const doc = String(p.name || "");
+          if (!DR.DOCS.includes(doc)) return text("error: name must be spec or design");
+          const dcfg = DR.docReviewConfig(configOf(cwd), doc);
+          if (p.action === "docreview_lenses") return text(JSON.stringify({ doc, enabled: dcfg.enabled, lanes: dcfg.lenses.map((l: string) => `${doc}-${l}`), maxRounds: dcfg.maxRounds, documents: DR.docFiles(doc).map((n: string) => `${featureDir()}/${n}`) }));
+          if (p.action === "docreview_consolidate") {
+            const gate: any = withState(cwd, (st: any) => DR.docReviewRound(st, doc, dcfg.maxRounds));
+            if (!gate.ok) return text(`error: ${gate.error}`);
+            const r: any = DR.consolidateDocReview(cwd, featureDir(), doc, schema("docreview-lens"), { lenses: dcfg.lenses, round: gate.round, config: dcfg });
+            if (!r.ok) withState(cwd, (st: any) => { st.counters[`docreview-${doc}`].count -= 1; });
+            return text(r.ok ? JSON.stringify(r) : `error: ${r.error}`);
+          }
+          if (p.action === "docreview_resolve") {
+            let ds: any; try { ds = JSON.parse(p.text || ""); } catch (e: any) { return text(`error: text must be a JSON array of decisions: ${e.message}`); }
+            const r: any = DR.resolveDocReview(cwd, featureDir(), doc, ds);
+            return text(r.ok ? JSON.stringify(r) : `error: ${r.error}`);
+          }
+          const r: any = DR.closeDocReview(cwd, featureDir(), doc, p.status || "", p.text || "");
+          return text(r.ok ? `${doc} review ${r.status}` : `error: ${r.error}`);
+        }
         if (p.action === "unlock") { S.releaseLock(lock()); return text("lock released"); }
         if (p.action === "lessons_for") {
           const f = path.join(cwd, ".ai", "lessons.md");
@@ -362,7 +383,7 @@ export default function (pi: ExtensionAPI) {
                 const miss = phaseRequires(p.phase, featureDir()).filter((f: string) => !fs.existsSync(path.join(cwd, f)));
                 if (miss.length) throw new Error(`cannot enter ${p.phase}: missing ${miss.join(", ")}. Re-run the producing worker.`);
                 try { (recordLessons as any)(cwd, readJson(path.join(cwd, featureDir(), "holdout", "results.json"))); } catch { /* no results yet */ }
-                const probs = (phaseProblems as any)({ lessons: (loadLessons as any)(cwd), phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: checkGate(cwd, st).required, head: checkGate(cwd, st).head });
+                const probs = (phaseProblems as any)({ lessons: (loadLessons as any)(cwd), phase: p.phase, cwd, featureDir: featureDir(), state: st, schemas: gateSchemas(), threshold: satThreshold(cwd), requiredApprovals: (requiredApprovals as any)(configOf(cwd)), requiredChecks: checkGate(cwd, st).required, head: checkGate(cwd, st).head, docReview: DR.docReviewConfig(configOf(cwd), "spec").enabled });
                 probs.push(...checkGate(cwd, st).extra);
                 if (probs.length) throw new Error(`cannot enter ${p.phase}:\n- ${probs.join("\n- ")}`);
               }
@@ -916,6 +937,7 @@ export default function (pi: ExtensionAPI) {
           t.agent === "relay-verifier" ? `## holdout/results.json: after running every scenario in holdout/scenarios.json black-box, write holdout/results.json (schema below) with one result per scenario; pass requires non-empty evidence files; list each evidence path in 'evidence' relative to the repo/worktree root, i.e. ${featureDir()}/holdout/evidence/<file>. On failure set 'symptom' to a one-line observed behaviour (no steps; the orchestrator relays it to implementors).\n\`\`\`json\n${JSON.stringify(schema("holdout-results"))}\n\`\`\`` : "",
           t.agent === "relay-architect" ? `## plan.json must validate against this JSON Schema exactly (no extra properties; slice ids kebab-case; contracts are objects {name,pinned,location}; slice.contracts are strings; slices need dependsOn; every slice that changes code lists its test file(s) in slice.tests; slices in the SAME wave of order must have completely disjoint files.own (if two slices touch the same file, put them in separate waves, one slice per wave, in dependency order) and a wave with 2+ slices requires independence.parallelizable=true, otherwise use one slice per wave; top-level needs contracts, slices, order (array of arrays of slice ids), independence)\n\`\`\`json\n${JSON.stringify(schema("plan"))}\n\`\`\`` : "",
           t.agent === "relay-reviewer" && t.lane ? `## Review lens: ${t.lane}\nReview ONLY through this lens. Checklist: ${(LENS_CHECKLISTS as any)[t.lane] || "apply the lens named above"}.\nWrite ${featureDir()}/reports/review-${t.lane}.json (JSON only, no markdown) validating against this schema with lens="${t.lane}". Every finding needs a citation "path:line" (e.g. src/app.js:42) or it is dropped. severity blocker/major = must fix before PR; minor = advisory. Use an empty findings array if clean.\n\`\`\`json\n${JSON.stringify(schema("review-lens"))}\n\`\`\`` : "",
+          t.agent === "relay-doc-reviewer" && t.lane ? (() => { const li: any = DR.laneInfo(t.lane); if (!li) return ""; return `## Document review: ${li.doc} through the "${li.lens}" lens\nDocument under review (read in full): ${DR.docFiles(li.doc).map((n: string) => `${featureDir()}/${n}`).join(", ")}${li.doc === "design" ? `; the approved spec ${featureDir()}/spec.md is the referenced context` : ""}.\nChecklist: ${(DR.DOC_LENS_CHECKLISTS as any)[li.lens]}\nWrite ${featureDir()}/reports/docreview-${t.lane}.json (JSON only) with doc="${li.doc}", lens="${li.lens}"${li.lens === "comprehension" ? ", and a real \"paraphrase\" of what the document says" : ""}. Each finding: severity (blocker/major/minor), scope (section heading or path:line), title, rationale, recommendation. Use an empty findings array if clean. You see only the document, never the conversation.\n\`\`\`json\n${JSON.stringify(schema("docreview-lens"))}\n\`\`\``; })() : "",
           t.agent === "relay-researcher" && t.lane ? `## Research topic: ${t.lane}\nCover ONLY this topic; other researchers cover the rest in parallel. Write ${featureDir()}/research-${t.lane}.md. Every claim cites path:line.` : "",
           t.agent === "relay-verifier" && wsNames && Object.keys(readJson(stateFile(cwd)).workspace?.repos || {}).length > 1 ? `## Cross-repo verification (required)\nThis feature changes ${Object.keys(readJson(stateFile(cwd)).workspace.repos).join(" + ")}. Besides per-repo checks, run at least one scenario end to end ACROSS the repos: start the producing service from its worktree (${Object.keys(readJson(stateFile(cwd)).workspace.repos).join(", ")} are directories in your cwd; producers before consumers, ephemeral or free ports, never a port already in use), then drive the consuming repo's real client/UI against it over real HTTP/IPC. Use each repo's run command from its AGENTS.md (a worktree has no node_modules: install into a sandbox or reuse the main checkout's, and record it in toolsInstalled). Always stop what you started. Save the evidence as evidence/xrepo-<scenario>.json (or .png/.log) including each repo's HEAD sha, the command lines, ports and the raw request/response. If the services cannot be run together, mark those scenarios blocked with the reason; do not substitute mocks and call it cross-repo.` : "",
           wsNames ? `## Workspace (multi-repo) feature\nYour working directory is the feature container; each repo is a git worktree directory inside it: ${wsNames.join(", ")} (only repos the plan touches exist there). Every path is repo-qualified, e.g. ${wsNames[0]}/src/x.js. Main checkouts (read-only reference for research/design) are at ${wsMark.root}${path.sep}<repo>. Implementors: change files ONLY inside your slice's repo dir and commit inside that repo dir (git -C <repo> ...). Never commit at the container root.` : "",
