@@ -139,3 +139,17 @@ test("phaseProblems enforces the document review only when enabled", () => {
   const d = phaseProblems({ ...base, phase: "design-approval", state: { approvals: { spec: "approved" } }, docReview: true });
   assert.ok(d.some((p) => /design has not been through/.test(p)));
 });
+
+test("consolidate: near-duplicate findings from different lenses merge, unrelated ones stay apart", () => {
+  const cwd = mk();
+  all(cwd, {
+    critic: [f("major", "Overdue list", "dueDate is optional but POST requires it"), f("minor", "Goal", "Vague wording")],
+    structural: [f("blocker", "Overdue list endpoint", "POST requires dueDate although it is optional")],
+    style: [f("minor", "Data model", "Totally different retention concern")],
+  });
+  const r = consolidateDocReview(cwd, fd, "spec", schema, { round: 1 });
+  assert.equal(r.findings, 3);
+  const cons = JSON.parse(fs.readFileSync(path.join(cwd, fd, "reports", "docreview-spec-consolidated.json"), "utf8"));
+  const merged = cons.findings.find((x) => x.lenses.length === 2);
+  assert.equal(merged.severity, "blocker");
+});
