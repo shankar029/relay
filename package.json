@@ -1,8 +1,8 @@
 {
   "name": "relay-harness",
-  "version": "0.3.2",
+  "version": "0.4.0",
   "type": "module",
-  "description": "Requirement-to-PR harness for the pi coding agent: spec, design, parallel implementation, evidence-gated verification and review by specialist agents, with code-enforced rules and resumable per-feature worktrees.",
+  "description": "Requirement-to-PR harness for the pi coding agent: EGM-style fresh-context spec/design review (adapted from Google EGM, Apache-2.0) plus the execution layer: design, parallel implementation, evidence-gated verification and review by specialist agents, with code-enforced rules and resumable per-feature worktrees.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/shankar029/relay.git"
@@ -21,7 +21,10 @@
     "multi-agent",
     "harness",
     "pull-request",
-    "verification"
+    "verification",
+    "spec-review",
+    "design-review",
+    "egm"
   ],
   "license": "MIT",
   "pi": {

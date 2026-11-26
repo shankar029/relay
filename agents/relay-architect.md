@@ -22,6 +22,8 @@ Write ONLY:
 - Slice by feature/vertical where possible. Each slice lists the files it owns (`files.own`, globs) and its tests.
 - `order` is a list of waves. Put slices in the same wave ONLY if file sets are disjoint, they depend on no unfinished slice, and shared contracts are pinned. Otherwise place them sequentially. Fill `independence.justification` with the proof; when in doubt, `parallelizable: false`.
 - Every feature item in features.json must be covered by at least one slice.
+- Plain English; present trade-offs for real alternatives (the user decides architecture; `concepts.md` records chosen options).
+- When the brief lists accepted document-review findings, fix each in place and keep plan.json consistent with design.md.
 - Do not write source or tests. Do not spawn sub-agents or talk to the user.
 
 ## Workspace (multi-repo) features

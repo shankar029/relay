@@ -1,0 +1,22 @@
+Relay
+Copyright (c) the Relay authors.
+
+This product includes ideas and adapted material from:
+
+Elephant Goldfish Model (EGM) - https://github.com/google/elephant-goldfish-model
+Copyright Google LLC. Licensed under the Apache License, Version 2.0
+(http://www.apache.org/licenses/LICENSE-2.0).
+
+Adapted (modified for Relay; changes include: lens reports as JSON, deterministic
+consolidation in code instead of a synthesizer agent, round caps of 3 with one
+clean round, Relay artefact layout and gates):
+  - lib/docreview.mjs
+  - schemas/docreview-lens.schema.json
+  - agents/relay-doc-reviewer.md
+  - the doc-review steps in skills/relay/SKILL.md and docs/doc-review.md
+
+From EGM: fresh-context lens reviewers that see only the document, the
+comprehension (paraphrase) test, finding settle/reopen logic, resolve
+classification (contest needs checkable evidence, severity never lowered),
+bounded review rounds, and the author-decides rule. EGM branding and assets
+are not used. EGM is not affiliated with or endorsing Relay.

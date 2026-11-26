@@ -56,6 +56,9 @@ Asking one AI agent to "build this feature" works for small things. For anything
 | **Live stepper and worker UI** | A stage stepper and per-worker panel driven from on-disk status, plus a read-only live worker viewer (`alt+w`). | `lib/status.mjs`, `extensions/harness/watch.ts`, `test/status.test.mjs` |
 | **Portable formats** | Agent Skills (`skills/relay/SKILL.md`), `agents/<name>.md`, a pi extension, and a Copilot installer (partly verified; see [Copilot port](#copilot-port)). | `lib/copilot.mjs`, `scripts/gen-copilot-agents.mjs` |
 
+### Relay and EGM: spec/design review plus an execution layer
+Relay's spec and design review is adapted from Google's [Elephant Goldfish Model](https://github.com/google/elephant-goldfish-model) (EGM, Apache-2.0; see [NOTICE](NOTICE) and [docs/doc-review.md](docs/doc-review.md)). EGM covers drafting specs and designs and reviewing them with fresh-context reviewers. Relay takes that review idea (lens reviewers that see only the document, a comprehension test, settle/reopen, contest-needs-evidence resolution, bounded rounds) and adds the execution layer after it: parallel implementors with disjoint file ownership, an evidence-gated verifier with hidden holdouts, code review, multi-repo workspaces, resumable on-disk state and one PR per repo. Relay does not do EGM's bootstrap, brainstorm swarm or interactive section-by-section drafting. Verified: unit tests for consolidation, resolve rules, caps and gates (`test/docreview.test.mjs`); see the live-test note in the changelog.
+
 No benchmark or accuracy claims are made here: we have not measured Relay against other tools.
 
 ## How Relay manages context
@@ -292,6 +295,7 @@ Verified: the push/create/cross-link/idempotency path ran against two real throw
 | `relay-implementor` | Code and tests for one slice | only the files its slice owns |
 | `relay-verifier` | Checks with evidence; sets `passes`; scores holdouts | `evidence/**`, `reports/verify-*.json`, `holdout/results.json` |
 | `relay-reviewer` | Reviews the diff through one lens | `reports/review-<lens>.json` |
+| `relay-doc-reviewer` | Fresh-context review of spec/design through one lens (EGM-style) | `reports/docreview-<doc>-<lens>.json` |
 
 ### What ends up in `.ai/<slug>/`
 

@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.4.0
+
+- **Document review (adapted from Google's Elephant Goldfish Model, Apache-2.0; see NOTICE, docs/doc-review.md).** After the spec and after the design, fresh-context `relay-doc-reviewer` workers (one lens each, run in parallel; they may read only the document and what it references) report findings; the harness consolidates them deterministically, you classify each finding (fix / contest with checkable evidence / escalate / decline minor), accepted fixes go back to the spec-writer or architect, and a clean round converges (cap 3, configurable via `docReview`). `set_phase` blocks spec-approval/design-approval until the review is converged, accepted or skipped with a reason. A missing or invalid lens report is an error, never a clean review.
+- Optional `concepts.md` concept brief with the author-decides rule; plain-English rules for spec-writer and architect.
+- **Taken from EGM:** lens reviewers, comprehension paraphrase test, settle/reopen, resolve rules, round caps. **Skipped:** bootstrap/lite/drift-report, brainstorm swarm, branding and packaging, interactive section-by-section drafting, two-clean-rounds. **Relay already did better/differently:** holdout scenarios with spec-lint, plan independence checks, evidence-gated passes, so those were kept as they were.
+- Positioning: Relay is the execution layer (parallel implementors, evidence-gated verifier, code review, multi-repo, resumable state, per-repo PRs) behind EGM-style spec/design review. No comparative performance claims.
+- Verified live (pi, gpt-6.1-sol, simulated approvals) on a sample API: spec review ran 5 parallel real reviewers, found real issues (e.g. multiline query vs input type=search), fixes were applied, converged in round 2; design review ran 6 lenses, converged in round 2. Not verified live: the Copilot port of the new agent (generated, guard is instruction-only), contest/escalate paths with real reviewers (unit-tested only), multi-repo doc review, implementation after reviewed docs. Evidence is kept outside the repo.
+
 ## 0.3.2
 
 - `relay_pr`: after finalize and your confirmation, pushes only `relay/<slug>` (never force) and opens one PR per affected repo via `gh`, cross-linked, URLs recorded in `state.prs`, idempotent on resume; `pr.auto=false` or missing gh/remote leaves `pr.md`. Verified live on throwaway GitHub repos (not through the full TUI confirm).

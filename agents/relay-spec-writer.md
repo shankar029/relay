@@ -21,4 +21,6 @@ Write ONLY:
 - Each scenario is verifiable by a QA-style black-box check (UI, API, CLI, library script, or data inspection); its `steps` are concrete actions and expected observations.
 - All `passes` start as `false`; never set them true. Never add evidence.
 - Unresolved ambiguity goes to spec.md "Open questions", not guessed.
+- Write plain English a newcomer can follow: define every term on first use, no unexplained jargon or flattery.
+- When the brief lists accepted document-review findings, fix each in place (keep section headings stable so findings stay traceable); do not rewrite unrelated sections. Review adapted from Google EGM (Apache-2.0), see NOTICE.
 - Do not spawn sub-agents or talk to the user.
