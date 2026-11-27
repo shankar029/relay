@@ -638,8 +638,10 @@ export default function (pi: ExtensionAPI) {
             if (!files.length) return text("nothing written by init; nothing to commit");
             if (!(await ask("Commit init files?", `Commit (no push): ${files.join(", ")}`))) return text("declined");
             execFileSync("git", ["add", "--", ...files], { cwd });
-            const lock = path.join(cwd, I.TOOLS_DIR, "package-lock.json");
-            if (fs.existsSync(lock)) execFileSync("git", ["add", "--", rel(lock)], { cwd });
+            for (const n of ["package.json", "package-lock.json", "shot.mjs"]) {
+              const tf = path.join(cwd, I.TOOLS_DIR, n);
+              if (fs.existsSync(tf)) execFileSync("git", ["add", "--", rel(tf)], { cwd });
+            }
             const staged = execFileSync("git", ["diff", "--cached", "--name-only"], { cwd, encoding: "utf8" }).trim();
             if (!staged) return text("already committed");
             execFileSync("git", ["-c", "user.name=Relay", "-c", "user.email=relay@localhost", "commit", "-q", "-m", "chore: relay init (AGENTS.md, config, verifier tooling)\n\nCo-authored-by: Copilot App <223556219+Copilot@users.noreply.github.com>"], { cwd });

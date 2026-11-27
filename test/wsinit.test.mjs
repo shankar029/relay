@@ -84,6 +84,16 @@ test("excluded repos are not listed or detected", () => {
     assert.equal(WI.repoInitStatus(repos[0]).agentsMd, false);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
+test("dev port detected as {port, source} renders as a number", () => {
+  const root = mk();
+  try {
+    const repos = W.listRepos(root, {});
+    const d = dets(root, repos);
+    d[repos[0].name] = { ...d[repos[0].name], apps: [{ devCommand: "npm run dev", port: { port: 5173, source: "script flag" } }] };
+    const body = WI.renderWorkspaceAgents(repos, d, []);
+    assert.ok(body.includes("(port 5173)") && !body.includes("[object Object]"));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
 test("source scan infers an HTTP service and its client link from shared routes", () => {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "relay-wsinit-"));
   repo(root, "svc", { "package.json": JSON.stringify({ name: "svc", scripts: { test: "node --test" } }), "src/server.js": 'import http from "node:http";\nexport const createServer = () => http.createServer((q, s) => { if (q.url.startsWith("/items")) s.end("[]"); });\n' });
