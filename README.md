@@ -59,7 +59,7 @@ Asking one AI agent to "build this feature" works for small things. For anything
 ### Relay and EGM: spec/design review plus an execution layer
 Relay's spec and design review is adapted from Google's [Elephant Goldfish Model](https://github.com/google/elephant-goldfish-model) (EGM, Apache-2.0; see [NOTICE](NOTICE) and [docs/doc-review.md](docs/doc-review.md)). EGM covers drafting specs and designs and reviewing them with fresh-context reviewers. Relay takes that review idea (lens reviewers that see only the document, a comprehension test, settle/reopen, contest-needs-evidence resolution, bounded rounds) and adds the execution layer after it: parallel implementors with disjoint file ownership, an evidence-gated verifier with hidden holdouts, code review, multi-repo workspaces, resumable on-disk state and one PR per repo. Relay does not do EGM's bootstrap, brainstorm swarm or interactive section-by-section drafting. Verified: unit tests for consolidation, resolve rules, caps and gates (`test/docreview.test.mjs`); see the live-test note in the changelog.
 
-No benchmark or accuracy claims are made here: we have not measured Relay against other tools.
+No superiority claims are made: a small seeded-flaw benchmark (see CHANGELOG 0.4.1) found detection roughly equal to a single-pass review at about 2x the tokens, within noise; the structural guarantees (fresh context, gates, round caps) are the value, not measured accuracy.
 
 ## How Relay manages context
 

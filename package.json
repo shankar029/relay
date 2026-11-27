@@ -1,6 +1,6 @@
 {
   "name": "relay-harness",
-  "version": "0.4.0",
+  "version": "0.4.1",
   "type": "module",
   "description": "Requirement-to-PR harness for the pi coding agent: EGM-style fresh-context spec/design review (adapted from Google EGM, Apache-2.0) plus the execution layer: design, parallel implementation, evidence-gated verification and review by specialist agents, with code-enforced rules and resumable per-feature worktrees.",
   "repository": {
@@ -51,6 +51,8 @@
     "docs",
     "relay.config.json",
     "README.md",
+    "NOTICE",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "peerDependencies": {
