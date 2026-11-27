@@ -153,3 +153,16 @@ test("consolidate: near-duplicate findings from different lenses merge, unrelate
   const merged = cons.findings.find((x) => x.lenses.length === 2);
   assert.equal(merged.severity, "blocker");
 });
+test("consolidate: non-findings are dropped and style findings never block", () => {
+  const cwd = mk();
+  all(cwd, {
+    "zoom-out": [f("minor", "Goal", "No false compromise detected"), f("minor", "Goal", "Nothing to report")],
+    style: [f("major", "Intro", "Filler adjectives")],
+    critic: [f("minor", "Errors", "Notification gap")],
+  });
+  const r = consolidateDocReview(cwd, fd, "spec", schema, { round: 1 });
+  assert.equal(r.dropped, 2);
+  assert.equal(r.findings, 2);
+  assert.equal(r.blocking, 0);
+  assert.equal(r.clean, true);
+});
