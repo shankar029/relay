@@ -276,6 +276,7 @@ export default function (pi: ExtensionAPI) {
             : `initialised ${featureDir()} in place (no worktree) at ${cwd}`);
         }
         if (p.action === "open") {
+          if (pausedNow) return text("error: Relay is paused (/relay-pause). Do not re-open or re-launch workers; wait for the user to run /relay-resume.");
           slug = p.slug;
           if (!slug) return text("error: slug required");
           const found = p.worktree === false ? undefined : (() => {
@@ -864,7 +865,7 @@ export default function (pi: ExtensionAPI) {
           touch();
           const body = res?.content?.map((c: any) => c.text).join("\n") ?? "";
           try {
-            pi.sendMessage({ customType: "relay-batch-done", display: true, content: `Background batch ${id} finished (${desc}):\n\n${body}` }, { deliverAs: "followUp", triggerTurn: true });
+            pi.sendMessage({ customType: "relay-batch-done", display: true, content: `Background batch ${id} finished (${desc}):\n\n${body}` }, { deliverAs: "followUp", triggerTurn: !pausedNow });
           } catch { /* session already gone */ }
         });
         touch();
