@@ -123,6 +123,13 @@ test("spec lint flags vague or unobservable scenarios", () => {
   assert.ok(w.some((x) => x.includes("no scenarios")));
 });
 
+test("spec lint allows the domain word todo but flags TODO/TBD markers", () => {
+  const f = (s) => ({ items: [{ name: "a", scenarios: [{ name: "s", steps: ["POST /todos", s] }] }] });
+  assert.deepEqual(lintSpec(f("expect the todo list returns HTTP 200")), []);
+  assert.ok(lintSpec(f("expect TODO: fill in, returns 200")).some((x) => x.includes("ambiguous")));
+  assert.ok(lintSpec(f("expect TBD status 200")).length > 0);
+});
+
 test("holdout guard blocks substitution and scenarios.json name probes", () => {
   for (const c of ["cat $(echo hold)out/a", "find . -name scenarios.json", "cat .ai/x/hold*/sce*"])
     assert.ok(holdoutAccessProblem("relay-reviewer", JSON.stringify({ command: c })), c);
