@@ -1011,6 +1011,10 @@ export default function (pi: ExtensionAPI) {
         if (signal?.aborted) {
           // cancelled mid-run: nothing is half-recorded; the step/slice is re-runnable
           withState(cwd, (st: any) => { if (t.step) S.finishStep(st, t.step, { status: "interrupted", outputs: [], error: "cancelled" }); if (t.slice) st.slices[t.slice] = { ...(st.slices[t.slice] || {}), status: "interrupted" }; return "cancelled"; });
+          if (t.slice && t.agent === "relay-implementor") for (const d of wsNames ? wsNames.map((n: string) => path.join(wcwd, n)) : [wcwd]) {
+            // park half-written edits so the re-run (or a later merge) does not trip over them
+            if (fs.existsSync(path.join(d, ".git"))) spawnSync("git", ["stash", "push", "-u", "-m", `relay-cancelled-${t.slice}`, "--", ".", ":(exclude).ai"], { cwd: d, stdio: "ignore" });
+          }
           return `### ${t.agent}${t.slice ? ` (${t.slice})` : ""} CANCELLED (interrupted; re-run it)`;
         }
         if (t.agent === "relay-implementor") {
