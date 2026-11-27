@@ -752,7 +752,7 @@ export default function (pi: ExtensionAPI) {
         return text(`${verdict}\n${rows.join("\n")}`);
       }
       let checks = (readJson(stateFile(cwd)).checks || {}) as Record<string, string>;
-      if (!Object.keys(checks).length && configOf(cwd).checks && typeof configOf(cwd).checks === "object") {
+      if (!Object.keys(checks).length && configOf(cwd).checks && typeof configOf(cwd).checks === "object" && Object.values(configOf(cwd).checks).every((v) => typeof v === "string")) { // workspace configs nest checks per repo; those are not a flat state.checks
         checks = configOf(cwd).checks; // written by /relay-init
         withState(cwd, (st: any) => { st.checks = checks; return "checks from relay.config.json"; });
       }
