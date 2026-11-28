@@ -29,7 +29,7 @@ import { loadLessons, recordLessons } from "../../lib/speclessons.mjs";
 import { autonomyLevel, requiredApprovals } from "../../lib/autonomy.mjs";
 import { addUsage, budgetProblem } from "../../lib/budget.mjs";
 import * as DR from "../../lib/docreview.mjs";
-import { laneProblem, reviewLenses, mergeResearch, consolidateReview, reviewRerun, reviewChangedFiles, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
+import { laneProblem, reviewLenses, mergeResearch, consolidateReview, addWaiver, reviewRerun, reviewChangedFiles, LENS_CHECKLISTS } from "../../lib/fanout.mjs";
 // @ts-ignore
 import { stashPartialWork, enforceOwnership, quarantineStrays, commitArtefacts, addSliceWorktree, commitSliceLeftovers, mergeSlices, removeSliceWorktree, changedSince } from "../../lib/gitflow.mjs";
 const S: any = S_;
@@ -209,7 +209,7 @@ export default function (pi: ExtensionAPI) {
       "Read/modify .ai/<slug>/state.json safely (atomic, schema-validated). Actions: init, open, get, set_phase (content-gated; 'done' is refused), pr_draft (text=summary, name=title, symptom=caveats one per line; writes pr.md), finalize (phase pr -> secret scan, commit .ai/<slug>, done; does not push: use relay_pr after it), step, counter, approval (only 'pending'), slice, checks, question, answer, artifact, lesson_add, lessons_for, unlock, docreview_lenses (name=spec|design: lanes for relay-doc-reviewer), docreview_consolidate (name=doc; counts a round, cap docReview.maxRounds), docreview_resolve (name=doc, text=JSON [{id,action:fix|contest|escalate|decline,justification,evidence?}]), docreview_close (name=doc, status=accept|skip, text=reason).",
     promptSnippet: "Change Relay run state (never edit state.json by hand)",
     parameters: Type.Object({
-      action: StringEnum(["init", "open", "get", "set_phase", "pr_draft", "finalize", "step", "counter", "approval", "slice", "checks", "question", "answer", "artifact", "lesson_add", "lessons_for", "unlock", "merge_research", "review_lenses", "consolidate_review", "docreview_lenses", "docreview_consolidate", "docreview_resolve", "docreview_close"] as const),
+      action: StringEnum(["init", "open", "get", "set_phase", "pr_draft", "finalize", "step", "counter", "approval", "slice", "checks", "question", "answer", "artifact", "lesson_add", "lessons_for", "unlock", "merge_research", "review_lenses", "consolidate_review", "waive_review", "docreview_lenses", "docreview_consolidate", "docreview_resolve", "docreview_close"] as const),
       slug: Type.Optional(Type.String()),
       requirement: Type.Optional(Type.String()),
       phase: Type.Optional(Type.String()),
@@ -332,6 +332,14 @@ export default function (pi: ExtensionAPI) {
             ? Object.entries<any>(st0.workspace.repos).flatMap(([rn, ri]) => ((reviewChangedFiles as any)(path.join(cwd, rn), ri.baseSha || ri.base, defaultBranch(path.join(cwd, rn))) as string[]).map((f) => `${rn}/${f}`))
             : (reviewChangedFiles as any)(cwd, st0.worktree?.base, defaultBranch(cwd));
           return text(JSON.stringify({ lenses: (reviewLenses as any)(cfg, changed), maxRounds: 2 }));
+        }
+        if (p.action === "waive_review") {
+          // the only sanctioned way to accept a blocking finding: explicit human confirmation, recorded and shown in review.md
+          if (!ctx.hasUI) return text("error: waive_review needs the human to confirm (no UI available)");
+          const cit = String(p.text || ""), why = String(p.message || "");
+          if (!(await ctx.ui.confirm("Waive review finding?", `${cit}\n\nReason: ${why}\n\nThe finding stays in review.md marked WAIVED and is listed as a caveat.`))) return text("waiver declined by the user");
+          const w: any = (addWaiver as any)(cwd, featureDir(), cit, why);
+          return text(w.ok ? `waived ${w.key}; re-run consolidate_review (no lenses argument) to apply it` : `error: ${w.error}`);
         }
         if (p.action === "consolidate_review") {
           const want = p.text ? String(p.text).split(",").map((s) => s.trim()).filter(Boolean) : null;

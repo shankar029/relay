@@ -5,7 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import { execFileSync } from "node:child_process";
 import { checkRead, checkWrite, requiredOutputs, isLayoutFile } from "../lib/policy.mjs";
-import { laneProblem, reviewLenses, mergeResearch, researchProblems, consolidateReview, reviewProblems, reviewRerun, reviewChangedFiles } from "../lib/fanout.mjs";
+import { laneProblem, reviewLenses, mergeResearch, researchProblems, consolidateReview, addWaiver, reviewProblems, reviewRerun, reviewChangedFiles } from "../lib/fanout.mjs";
 
 const FD = ".ai/f";
 const schema = JSON.parse(fs.readFileSync(new URL("../schemas/review-lens.schema.json", import.meta.url), "utf8"));
@@ -77,6 +77,22 @@ test("consolidateReview drops uncited, de-dups, ranks, flags blocking lenses", (
   assert.equal(r.verdict, "changes-requested");
   assert.match(fs.readFileSync(path.join(d, FD, "reports/review.md"), "utf8"), /Verdict: changes-requested/);
   assert.ok(reviewProblems(d, FD).some((p) => /blocking/.test(p)));
+});
+
+test("waived blocking finding no longer blocks but stays visible; bad waivers rejected", () => {
+  const d = tmp();
+  w(d, "reports/review-security.json", lens("security", [fnd("major", "src/a.js:5", "inj"), fnd("blocker", "src/b.js:2", "x")]));
+  assert.ok(!addWaiver(d, FD, "no-line", "r").ok);
+  assert.ok(!addWaiver(d, FD, "src/a.js:5", "  ").ok);
+  assert.ok(addWaiver(d, FD, "src/a.js:5", "keyboard-only edge case, accepted").ok);
+  const r = consolidateReview(d, FD, schema);
+  assert.equal(r.blocking, 1);
+  const md = fs.readFileSync(path.join(d, FD, "reports/review.md"), "utf8");
+  assert.match(md, /WAIVED by user/);
+  assert.match(md, /Waiver reason: keyboard-only/);
+  assert.ok(reviewProblems(d, FD).some((p) => /1 unresolved/.test(p)));
+  addWaiver(d, FD, "src/b.js:2", "ok");
+  assert.equal(consolidateReview(d, FD, schema).verdict, "approve");
 });
 
 test("consolidateReview errors: lens mismatch, schema, missing expected lens", () => {

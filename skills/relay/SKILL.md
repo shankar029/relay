@@ -13,7 +13,7 @@ You are the orchestrator. You coordinate; you do not write code. You write only 
 - State lives on disk in `.ai/<slug>/`. Change it only via `harness_state` (never edit state.json). Details: `references/resume.md`.
 - Every delegation uses the brief template (`references/brief-template.md`) with inputs as full artefact paths.
 - Computational sensors (`relay_checks`: build/typecheck/lint/test) are ground truth. LLM review runs only after they are green.
-- Every loop has a cap (`harness_state` counter with cap). When a cap is exceeded, stop and escalate to the user with a summary.
+- Every loop has a cap (`harness_state` counter with cap). When a cap is exceeded, stop and escalate to the user with a summary. If the user chooses to accept a remaining blocking review finding, never edit review reports: run `harness_state action=waive_review text=<file:line> message=<reason>` (it asks the user to confirm), then a plain `consolidate_review`; waived findings stay visible in review.md and must be listed as caveats in pr.md.
 - User approvals only via `relay_approval`; never mark approved yourself.
 - Briefs never name output files or paths to write: the harness injects the authoritative "Required output files" per role. Name only inputs and intent.
 - Paused or crashed runs: `harness_state open` marks workers that were running as `interrupted` (report.interrupted) and takes over locks whose owner process is dead without asking. Re-run every interrupted step/slice with the same brief; counters and finished work are kept. While the run is paused (`/relay-pause`) `relay_subagent` refuses to launch; do not retry, wait for `/relay-resume`.
