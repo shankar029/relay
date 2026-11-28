@@ -120,6 +120,7 @@ test("per-repo PR text is cross-linked", () => {
   assert.match(md, /web: <PR URL>/);
   assert.match(md, /Create the PR manually/);
   assert.match(W.multiRepoCreateSection(sums, ".ai/feat"), /pr-api\.md/);
+  assert.match(W.multiRepoCreateSection(sums, ".ai/feat"), /gh pr create/); // finalize gate needs it
 });
 
 test("status: repo tag on slices and container discovery", () => {
